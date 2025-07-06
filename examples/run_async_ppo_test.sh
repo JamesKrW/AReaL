@@ -9,11 +9,11 @@
 python3 training/main_async_ppo.py \
     n_nodes=1 n_gpus_per_node=2 \
     allocation_mode=sglang.d1p1m1+d1p1m1 \
-    cluster.fileroot=/datadrive_d/kangrui/experiments \
+    cluster.fileroot=/root/project/AReaL/examples \
     actor.type._class=qwen3 \
-    actor.path=/datadrive_d/kangrui/projects/toolusevlm/AReaL/experiments/models/Qwen--Qwen3-0.6B \
+    actor.path=Qwen/Qwen3-0.6B \
     ref.type._class=qwen3 \
-    ref.path=/datadrive_d/kangrui/projects/toolusevlm/AReaL/experiments/models/Qwen--Qwen3-0.6B \
+    ref.path=Qwen/Qwen3-0.6B \
     dataset.path=hf-dataset://inclusionAI/AReaL-RL-Data/data/boba_106k_0319.jsonl \
     dataset.train_bs_n_seqs=128 \
     group_size=4 \
