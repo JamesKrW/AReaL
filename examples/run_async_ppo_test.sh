@@ -1,29 +1,29 @@
 #!/bin/bash
 
-# Fixed Low-resource Async-PPO Training Script
-# This version fixes the model path issues and uses only available GPUs
-
-
-
-    
+# 2卡4090配置 - 一卡推理一卡训练
 python3 training/main_async_ppo.py \
     n_nodes=1 n_gpus_per_node=2 \
     allocation_mode=sglang.d1p1m1+d1p1m1 \
-    cluster.fileroot=/root/project/AReaL/examples \
+    cluster.fileroot=/root/project/AReaL/experiments \
+    wandb.mode=online \
+    wandb.project=areal \
+    wandb.name=test-areal \
     actor.type._class=qwen3 \
     actor.path=Qwen/Qwen3-0.6B \
     ref.type._class=qwen3 \
     ref.path=Qwen/Qwen3-0.6B \
     dataset.path=hf-dataset://inclusionAI/AReaL-RL-Data/data/boba_106k_0319.jsonl \
-    dataset.train_bs_n_seqs=128 \
+    dataset.train_bs_n_seqs=8 \
     group_size=4 \
-    ppo.gen.max_new_tokens=8192 \
+    ppo.gen.max_new_tokens=2048 \
     ppo.ppo_n_minibatches=4 \
-    actor_train.mb_spec.max_tokens_per_mb=8192 \
-    actor_inf.mb_spec.max_tokens_per_mb=8192 \
-    ref_inf.mb_spec.max_tokens_per_mb=8192 \
-    max_concurrent_rollouts=8 \
+    actor_train.mb_spec.max_tokens_per_mb=16384 \
+    actor_inf.mb_spec.max_tokens_per_mb=16384 \
+    max_concurrent_rollouts=4 \
     max_head_offpolicyness=4 \
+    flush_request_timeout=900 \
+    recover_retries=30 \
+    recover_after=60 \
     cpus_per_generation_server=2 \
     mem_per_generation_server=20480 \
     cpus_per_gserver_manager=2 \
@@ -36,9 +36,10 @@ python3 training/main_async_ppo.py \
     mem_per_model_worker=20480 \
     actor.sglang.enable_memory_saver=true \
     actor.sglang.allow_auto_truncate=true \
-    actor.sglang.context_length=8192 \
-    actor.sglang.mem_fraction_static=0.6 \
-    actor.sglang.max_running_requests=4 \
-    actor.sglang.chunked_prefill_size=4096 \
-    actor.sglang.max_prefill_tokens=8192 \
-    actor.sglang.cpu_offload_gb=2
+    actor.sglang.context_length=4096 \
+    actor.sglang.mem_fraction_static=0.2 \
+    actor.sglang.max_running_requests=2 \
+    actor.sglang.chunked_prefill_size=2048 \
+    actor.sglang.max_prefill_tokens=4096 \
+    actor.sglang.cpu_offload_gb=0 \
+    ray_temp_path=/root/project/ray
