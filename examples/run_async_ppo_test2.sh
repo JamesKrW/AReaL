@@ -10,13 +10,13 @@ RAY_TEMP_PATH="$(dirname "$PWD_ABS")/ray"
 export RAY_TEMP_PATH
 
 # Set cluster.fileroot to the experiments directory under the current directory (absolute path)
-CLUSTER_FILEROOT="$PWD_ABS/experiments"
+CLUSTER_FILEROOT="$PWD_ABS/areal_experiments"
 export CLUSTER_FILEROOT
 
 python3 training/main_async_ppo.py \
     n_nodes=1 n_gpus_per_node=8 \
     allocation_mode=sglang.d4p1m1+d2p2m1 \
-    cluster.fileroot=/home/aiscuser/projects/AReaL/experiments \
+    cluster.fileroot=$CLUSTER_FILEROOT \
     actor.type._class=qwen3 \
     actor.path=Qwen/Qwen3-1.7B \
     ref.type._class=qwen3 \
@@ -36,4 +36,5 @@ python3 training/main_async_ppo.py \
     wandb.mode=online \
     wandb.project=areal \
     wandb.name=test-areal-1.7b \
+    ray_temp_path=$RAY_TEMP_PATH
 

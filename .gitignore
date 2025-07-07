@@ -185,5 +185,5 @@ wandb/
 outputs/
 sympy/
 
-experiments/
+areal_experiments/
 .amltignore
