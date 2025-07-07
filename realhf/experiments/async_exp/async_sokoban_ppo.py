@@ -34,10 +34,14 @@ class AsyncPPOSokobanConfig(AsyncRLExperimentConfig, PPOMATHConfig):
     @property
     def agent(self) -> AgentAbstraction:
         return AgentAbstraction(
-            "multi-turn-agent",
+            "multi_turn_agent",
             args=dict(
                 gconfig=self.generation_config,
                 tokenizer_path=self.actor.path,
+                answer_save_path=os.path.join(constants.get_log_path(self), "generations"),
+                reward_scaling=1.0,
+                reward_bias=0.0,
+                turn_level_discount=1.0,
                 num_turns=3,  # Default number of turns for sokoban
             ),
         )

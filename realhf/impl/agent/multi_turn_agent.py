@@ -15,11 +15,22 @@ logger = logging.getLogger("Multi turn Agent")
 
 
 class MultiTurnAgent(Agent):
-    def __init__(self, gconfig, tokenizer_path, num_turns=20,turn_level_discount: float = 1.0,):
+    def __init__(
+        self,
+        gconfig,
+        tokenizer_path,
+        answer_save_path,
+        reward_scaling=1.0,
+        reward_bias=0.0,
+        turn_level_discount: float = 1.0,
+        num_turns: int = 3,
+    ):
         
         self.gconfig = gconfig.new(n=1)
-        
         self.tokenizer = load_hf_tokenizer(tokenizer_path)
+        self.answer_save_path = answer_save_path
+        self.reward_scaling = reward_scaling
+        self.reward_bias = reward_bias
         self.turn_level_discount = turn_level_discount
         self.num_turns = num_turns
         
@@ -138,6 +149,15 @@ class MultiTurnAgent(Agent):
             
             
            
+            # Debug comprehensive info
+            print(f"🐛 TURN {turn} DEBUG:")
+            print(f"   qid: {qid}")
+            print(f"   gconfig.n: {self.gconfig.n}")
+            print(f"   act.version_start: {act.version_start}, len: {len(act.version_start) if hasattr(act.version_start, '__len__') else 'N/A'}")
+            print(f"   act.version_end: {act.version_end}, len: {len(act.version_end) if hasattr(act.version_end, '__len__') else 'N/A'}")
+            print(f"   act.seqs length: {len(act.seqs)}")
+            print(f"   act.seqlens: {act.seqlens}")
+
             x["data"]["packed_input_ids"].extend(list(act.seqs[0]))
             x["data"]["packed_logprobs"].extend(list(act.logprobs[0]))
             x["data"]["seq_no_eos_mask"].append(act.no_eos[0])
@@ -145,6 +165,8 @@ class MultiTurnAgent(Agent):
             x["data"]["prompt_mask"].extend(
                 [1] * act.prompt_len + [0] * (act.seqlens[0] - act.prompt_len)
             )
+            x["data"]["version_start"].extend(list(act.version_start))
+            x["data"]["version_end"].extend(list(act.version_end))
             x["seqlens"]["packed_input_ids"][0].append(act.seqlens[0])
             x["seqlens"]["packed_logprobs"][0].append(act.seqlens[0] - 1)
             x["seqlens"]["prompt_mask"][0].append(act.seqlens[0])
@@ -173,10 +195,21 @@ class MultiTurnAgent(Agent):
             )
         x["data"]["rewards"] = all_rewards
         
+        # Debug final state before SequenceSample creation
+        print(f"🐛 FINAL DEBUG:")
+        print(f"   all_rewards: {all_rewards}")
+        print(f"   version_start length: {len(x['data']['version_start'])}")
+        print(f"   version_end length: {len(x['data']['version_end'])}")
+        print(f"   Expected length (num_turns): {self.num_turns}")
+
         # Convert all data to tensors
         for k in x["keys"]:
             if not isinstance(x["data"][k], torch.Tensor):
                 x["data"][k] = torch.tensor(x["data"][k], dtype=x["dtypes"][k])
+        
+        print(f"🐛 AFTER TENSOR CONVERSION:")
+        print(f"   version_start tensor shape: {x['data']['version_start'].shape}")
+        print(f"   version_end tensor shape: {x['data']['version_end'].shape}")
         
         x = SequenceSample(**x)
 
@@ -253,4 +286,4 @@ class MultiTurnAgent(Agent):
                     )
                     + "\n"
                 )
-register_agent("multi-turn-agent", MultiTurnAgent) 
+register_agent("multi_turn_agent", MultiTurnAgent) 
