@@ -18,9 +18,9 @@ python3 training/main_async_ppo_sokoban.py \
     allocation_mode=sglang.d4p1m1+d2p2m1 \
     cluster.fileroot=$CLUSTER_FILEROOT \
     actor.type._class=qwen3 \
-    actor.path=Qwen/Qwen3-1.7B \
+    actor.path=Qwen/Qwen2.5-1.5B-Instruct \
     ref.type._class=qwen3 \
-    ref.path=Qwen/Qwen3-1.7B \
+    ref.path=Qwen/Qwen2.5-1.5B-Instruct \
     dataset.train_bs_n_seqs=32 \
     group_size=8 \
     ppo.gen.max_new_tokens=4096 \

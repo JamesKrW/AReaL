@@ -33,7 +33,7 @@ class AsyncPPOSokobanConfig(AsyncRLExperimentConfig, PPOMATHConfig):
     @property
     def agent(self) -> AgentAbstraction:
         return AgentAbstraction(
-            "sokoban-text-multiturn",
+            "multi-turn-agent",
             args=dict(
                 gconfig=self.generation_config,
                 tokenizer_path=self.actor.path,
@@ -61,7 +61,7 @@ class AsyncPPOSokobanConfig(AsyncRLExperimentConfig, PPOMATHConfig):
 
     @property
     def generation_config(self) -> GenerationHyperparameters:
-        return GenerationHyperparameters(**asdict(self.ppo.gen)).new(n=self.group_size)
+        return GenerationHyperparameters(**dataclasses.asdict(self.ppo.gen)).new(n=self.group_size)
 
     @property
     def rpcs(self):
