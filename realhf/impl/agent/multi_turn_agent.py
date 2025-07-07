@@ -9,16 +9,20 @@ from realhf.api.core.agent_api import Agent, register_agent
 from realhf.api.core.data_api import SequenceSample, load_hf_tokenizer
 from realhf.api.core.env_api import EnvironmentService
 from realhf.api.core.model_api import BundledGenerationOutputs
+from realhf.base import constants, logging
+
+logger = logging.getLogger("Multi turn Agent")
+
 
 class MultiTurnAgent(Agent):
-    def __init__(self, gconfig, tokenizer_path, num_turns=20):
-        print(f"🔧 MultiTurnAgent.__init__: gconfig={gconfig}, tokenizer_path={tokenizer_path}, num_turns={num_turns}")
+    def __init__(self, gconfig, tokenizer_path, num_turns=20,turn_level_discount: float = 1.0,):
+        
         self.gconfig = gconfig.new(n=1)
-        print(f"🔧 MultiTurnAgent.__init__: Created gconfig with n=1: {self.gconfig}")
+        
         self.tokenizer = load_hf_tokenizer(tokenizer_path)
-        print(f"🔧 MultiTurnAgent.__init__: Loaded tokenizer from {tokenizer_path}")
+        self.turn_level_discount = turn_level_discount
         self.num_turns = num_turns
-        print(f"✅ MultiTurnAgent initialized successfully!")
+        
 
     async def collect_trajectory(
         self,
@@ -27,32 +31,30 @@ class MultiTurnAgent(Agent):
         obs_queue: asyncio.Queue,
         act_queue: asyncio.Queue,
     ) -> List[SequenceSample]:
-        print(f"🚀 collect_trajectory: Starting trajectory collection")
-        print(f"🚀 collect_trajectory: prompt={prompt}, env={env}")
-        print(f"🚀 collect_trajectory: obs_queue={obs_queue}, act_queue={act_queue}")
-        
-        # Reset environment and get initial observation
-        print(f"🌍 collect_trajectory: Calling env.reset()...")
+        """
+        Collect a single trajectory through multi-turn interaction with the environment.
+        """
+        # Extract query_id from prompt data
         obs, _ = await env.reset()
-        print(f"🌍 collect_trajectory: Got observation from env.reset(): {obs[:100]}..." if isinstance(obs, str) and len(obs) > 100 else f"🌍 collect_trajectory: Got observation: {obs}")
+        assert prompt.bs == 1
+        assert self.gconfig.n == 1
+        
+        prompt_token_ids= self.tokenizer.encode(obs, add_special_tokens=True)
+        qid = prompt.ids[0] 
+        
+        # Reset environment and get initial observation, passing query_id
+        
         assert isinstance(obs, str), f"Environment must return string obs, got {type(obs)}"
         
-        # Generate a unique qid for this trajectory using UUID + timestamp
-        base_qid = f"traj_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp() * 1000)}"
-        birth_time = int(datetime.now().timestamp() * 1000)
-        print(f"🆔 collect_trajectory: Generated base qid={base_qid}, birth_time={birth_time}")
         
         # Tokenize the initial observation
-        print(f"🔤 collect_trajectory: Tokenizing observation...")
-        print(f"🔤 collect_trajectory: obs type: {type(obs)}, obs length: {len(obs)}")
-        print(f"🔤 collect_trajectory: obs content preview (first 500 chars): {repr(obs[:500])}")
-        print(f"🔤 collect_trajectory: obs content preview (last 500 chars): {repr(obs[-500:])}")
-        
-        token_ids = self.tokenizer.encode(obs, add_special_tokens=True)
-        print(f"🔤 collect_trajectory: Tokenized to {len(token_ids)} tokens: {token_ids[:20]}..." if len(token_ids) > 20 else f"🔤 collect_trajectory: Tokenized to {len(token_ids)} tokens: {token_ids}")
-        
+
         all_rewards = []
-        print(f"📊 collect_trajectory: Initializing data structure...")
+        all_success = []
+        all_answers = []
+        birth_time = int(datetime.now().timestamp() * 1000)
+        prompt_str=obs
+        # Initialize data structure exactly like math_multi_turn_agent
         x = dict(
             keys=[
                 "packed_input_ids",
@@ -60,15 +62,19 @@ class MultiTurnAgent(Agent):
                 "packed_logprobs",
                 "seq_no_eos_mask",
                 "packed_prompts",
+                "version_start",
+                "version_end",
                 "rewards",
                 "birth_time",
             ],
-            ids=[base_qid],
+            ids=[qid],
             dtypes=dict(
                 packed_prompts=torch.long,
                 packed_input_ids=torch.long,
                 prompt_mask=torch.bool,
                 seq_no_eos_mask=torch.bool,
+                version_start=torch.int,
+                version_end=torch.int,
                 packed_logprobs=torch.float32,
                 rewards=torch.float32,
                 birth_time=torch.long,
@@ -78,6 +84,8 @@ class MultiTurnAgent(Agent):
                 prompt_mask=(),
                 seq_no_eos_mask=(),
                 packed_prompts=(),
+                version_end=(),
+                version_start=(),
                 packed_logprobs=(),
                 rewards=(),
                 birth_time=(),
@@ -85,117 +93,104 @@ class MultiTurnAgent(Agent):
             seqlens=dict(
                 packed_input_ids=[[]],
                 packed_logprobs=[[]],
-                packed_prompts=[[len(token_ids)]],
+                packed_prompts=[[len(prompt_token_ids)]],
                 prompt_mask=[[]],
                 seq_no_eos_mask=[[1 for _ in range(self.num_turns)]],
                 rewards=[[1 for _ in range(self.num_turns)]],
+                version_start=[[1 for _ in range(self.num_turns)]],
+                version_end=[[1 for _ in range(self.num_turns)]],
                 birth_time=[[1]],
             ),
             data=dict(
-                packed_prompts=token_ids,
+                packed_prompts=list(prompt_token_ids),
                 packed_logprobs=[],
                 packed_input_ids=[],
                 seq_no_eos_mask=[],
                 rewards=[],
+                version_start=[],
+                version_end=[],
                 birth_time=torch.tensor([birth_time], dtype=torch.long),
                 prompt_mask=[],
             ),
         )
-        print(f"📊 collect_trajectory: Data structure initialized with {len(x['keys'])} keys")
-        
-        current_obs = obs
-        print(f"🔄 collect_trajectory: Starting {self.num_turns} turns loop")
+        token_ids = prompt_token_ids
         for turn in range(self.num_turns):
-            print(f"🔄 collect_trajectory: ===== TURN {turn + 1}/{self.num_turns} =====")
-            print(f"🔄 collect_trajectory: Current obs length: {len(current_obs) if isinstance(current_obs, str) else 'N/A'}")
-            
-            # Create a unique qid for this turn
-            qid = f"{base_qid}"
-            print(f"🆔 collect_trajectory: Using qid={qid} for turn {turn + 1}")
-            
-            # Send current observation to model for generation
-            print(f"📤 collect_trajectory: Putting data to obs_queue (qid={qid}, tokens={len(token_ids)}, gconfig={self.gconfig})")
             await obs_queue.put((qid, token_ids, self.gconfig))
-            print(f"📤 collect_trajectory: Successfully put data to obs_queue")
-            
-            print(f"📥 collect_trajectory: Waiting for response from act_queue...")
-            try:
-                # Wait for response with timeout
-                act: BundledGenerationOutputs = await asyncio.wait_for(act_queue.get(), timeout=300.0)
-                print(f"📥 collect_trajectory: Got response from act_queue: {type(act)}")
-                print(f"📥 collect_trajectory: Response details - seqs shape: {act.seqs.shape if hasattr(act.seqs, 'shape') else len(act.seqs)}")
-                print(f"📥 collect_trajectory: Response details - logprobs shape: {act.logprobs.shape if hasattr(act.logprobs, 'shape') else len(act.logprobs)}")
-            except asyncio.TimeoutError:
-                print(f"⚠️ collect_trajectory: Timeout waiting for response from act_queue for qid={qid}")
-                raise
-            except Exception as e:
-                print(f"❌ collect_trajectory: Error waiting for response: {e}")
-                raise
-            
-            # Decode the generated response
-            print(f"🔤 collect_trajectory: Decoding generated response...")
+
+            act: BundledGenerationOutputs = await act_queue.get()
+
             seq_strs = self.tokenizer.batch_decode(
                 act.seqs,
                 clean_up_tokenization_spaces=False,
                 skip_special_tokens=True,
             )
-            print(f"🔤 collect_trajectory: Decoded {len(seq_strs)} sequences")
-            
             prompt_str = self.tokenizer.batch_decode(
                 [act.prompt_ids],
                 clean_up_tokenization_spaces=False,
                 skip_special_tokens=True,
             )[0]
-            print(f"🔤 collect_trajectory: Decoded prompt: {prompt_str[:100]}..." if len(prompt_str) > 100 else f"🔤 collect_trajectory: Decoded prompt: {prompt_str}")
+
+           
+            answers = [seq_str.split(prompt_str)[1] for seq_str in seq_strs]
             
-            # Extract the response (everything after the prompt)
-            response = seq_strs[0][len(prompt_str):].strip()
-            print(f"🔤 collect_trajectory: Extracted response: {response[:100]}..." if len(response) > 100 else f"🔤 collect_trajectory: Extracted response: {response}")
             
-            # Send response to environment
-            print(f"🌍 collect_trajectory: Sending response to environment...")
-            obs, reward, done, info = await env.step((qid, [response]))
-            print(f"🌍 collect_trajectory: Got environment step result - reward={reward}, done={done}")
-            print(f"🌍 collect_trajectory: New obs: {obs[:100]}..." if isinstance(obs, str) and len(obs) > 100 else f"🌍 collect_trajectory: New obs: {obs}")
+            obs, reward, done, info = await env.step((qid, answers))
             
-            all_rewards.append(reward)
-            print(f"🏆 collect_trajectory: Added reward {reward}, total rewards so far: {all_rewards}")
             
-            # Record the generation data
-            print(f"📊 collect_trajectory: Recording generation data...")
+           
             x["data"]["packed_input_ids"].extend(list(act.seqs[0]))
             x["data"]["packed_logprobs"].extend(list(act.logprobs[0]))
             x["data"]["seq_no_eos_mask"].append(act.no_eos[0])
+            all_rewards.append(reward)
             x["data"]["prompt_mask"].extend(
                 [1] * act.prompt_len + [0] * (act.seqlens[0] - act.prompt_len)
             )
             x["seqlens"]["packed_input_ids"][0].append(act.seqlens[0])
             x["seqlens"]["packed_logprobs"][0].append(act.seqlens[0] - 1)
             x["seqlens"]["prompt_mask"][0].append(act.seqlens[0])
-            x["data"]["rewards"].append(reward)
-            print(f"📊 collect_trajectory: Generation data recorded for turn {turn + 1}")
             
+            token_ids = list(act.seqs[0])
             if done:
-                print(f"🏁 collect_trajectory: Episode done after turn {turn + 1}")
                 break
                 
+            # Prepare for next turn - extract QID from new observation if present
+            
+            
             # Update token_ids for next turn (use the full sequence)
-            token_ids = list(act.seqs[0])
-            current_obs = obs
-            print(f"🔄 collect_trajectory: Updated token_ids for next turn, new length: {len(token_ids)}")
+            feedback=obs
+            feedback = "\n" + self.tokenizer.apply_chat_template(
+                [dict(content=feedback, role="user")],
+                add_generation_prompt=True,
+                tokenize=False,
+            )
+            feedback = self.tokenizer(feedback)["input_ids"]
+            token_ids.extend(feedback)
         
-        print(f"🔄 collect_trajectory: Finished turns loop")
+        # Add rewards to data structure AFTER the loop (like math agent)
+        for i in reversed(range(len(all_rewards) - 1)):
+            all_rewards[i] = (
+                all_rewards[i] + all_rewards[i + 1] * self.turn_level_discount
+            )
+        x["data"]["rewards"] = all_rewards
         
         # Convert all data to tensors
-        print(f"🔧 collect_trajectory: Converting data to tensors...")
         for k in x["keys"]:
             if not isinstance(x["data"][k], torch.Tensor):
-                print(f"🔧 collect_trajectory: Converting {k} to tensor (current type: {type(x['data'][k])})")
                 x["data"][k] = torch.tensor(x["data"][k], dtype=x["dtypes"][k])
         
-        print(f"🔧 collect_trajectory: Creating SequenceSample...")
         x = SequenceSample(**x)
-        print(f"✅ collect_trajectory: Successfully created trajectory with {len(all_rewards)} rewards: {all_rewards}")
+
+        if "task_ids" in prompt.keys:
+            y = SequenceSample(
+                keys=["task_ids"],
+                ids=[qid],
+                dtypes=dict(task_ids=torch.long),
+                trailing_shapes=dict(task_ids=()),
+                seqlens=dict(task_ids=[[1]]),
+                data=dict(task_ids=prompt.data["task_ids"]),
+            )
+            x.update_(y)
+
         return [x]
 
     def log_rewards_to_file(

@@ -1,5 +1,7 @@
 # Licensed under the Apache License, Version 2.0 (the "License").
 
+import uuid
+import time
 from typing import Optional
 import torch
 
@@ -35,14 +37,19 @@ class EnvDataset(torch.utils.data.Dataset):
         self.dataset_size = dataset_size
         
         # Create dummy data for framework compatibility
-        # The actual prompts will come from the environment
-        self.dummy_samples = [
-            {
+        # Each sample gets a unique query_id that will be used by the agent
+        self.dummy_samples = []
+        for i in range(dataset_size):
+            # Generate unique QID for each sample
+            timestamp = int(time.time() * 1000000)  # microseconds
+            uuid_part = uuid.uuid4().hex[:8]
+            query_id = f"env_traj_{uuid_part}_{timestamp}_{i}"
+            
+            self.dummy_samples.append({
                 "id": f"env_sample_{i}",
+                "query_id": query_id,
                 "prompt": "Environment will provide the actual prompt",
-            }
-            for i in range(dataset_size)
-        ]
+            })
     
     def __len__(self):
         """Return the virtual size of the dataset."""
@@ -56,14 +63,15 @@ class EnvDataset(torch.utils.data.Dataset):
         """
         sample = self.dummy_samples[idx % len(self.dummy_samples)]
         
-        # Create a minimal sequence sample
+        # Create a minimal sequence sample with query_id
         dummy_input_ids = [1, 2, 3]  # Dummy token IDs
         
         return data_api.SequenceSample.from_default(
-            ids=[sample["id"]],
+            ids=[sample["query_id"]],  # Use query_id as the sample ID
             seqlens=[len(dummy_input_ids)],
             data=dict(
                 packed_prompts=torch.tensor(dummy_input_ids, dtype=torch.long),
+                # Don't include query_id in data, it's already in ids
             ),
         )
 

@@ -23,7 +23,7 @@ python3 training/main_async_ppo_sokoban.py \
     ref.path=Qwen/Qwen2.5-1.5B-Instruct \
     dataset.path=placeholder_dataset.jsonl \
     dataset.train_bs_n_seqs=32 \
-    group_size=8 \
+    group_size=1 \
     ppo.gen.max_new_tokens=1024 \
     ppo.ppo_n_minibatches=4 \
     actor_train.mb_spec.max_tokens_per_mb=32768 \

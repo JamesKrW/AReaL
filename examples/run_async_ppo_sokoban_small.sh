@@ -28,7 +28,7 @@ python3 training/main_async_ppo_sokoban.py \
     ppo.ppo_n_minibatches=2 \
     actor_train.mb_spec.max_tokens_per_mb=8192 \
     actor_inf.mb_spec.max_tokens_per_mb=8192 \
-    max_concurrent_rollouts=4 \
+    max_concurrent_rollouts=1 \
     max_head_offpolicyness=2 \
     flush_request_timeout=900 \
     recover_retries=30 \
