@@ -1,13 +1,27 @@
 #!/bin/bash
 
-# 2卡4090配置 - 一卡推理一卡训练
+# Set wandb environment variables
+wandb login
+# Add other wandb-related variables here if needed
+
+# Get the absolute path of the current script directory
+PWD_ABS="$(pwd)"
+
+# Set ray_temp_path to the ray directory under the parent of the current directory (absolute path)
+RAY_TEMP_PATH="$(dirname "$PWD_ABS")/ray"
+export RAY_TEMP_PATH
+
+# Set cluster.fileroot to the experiments directory under the current directory (absolute path)
+CLUSTER_FILEROOT="$PWD_ABS/experiments"
+export CLUSTER_FILEROOT
+
 python3 training/main_async_ppo.py \
     n_nodes=1 n_gpus_per_node=2 \
     allocation_mode=sglang.d1p1m1+d1p1m1 \
     cluster.fileroot=/root/project/AReaL/experiments \
     wandb.mode=online \
     wandb.project=areal \
-    wandb.name=test-areal \
+    wandb.name=test-areal-0.6b \
     actor.type._class=qwen3 \
     actor.path=Qwen/Qwen3-0.6B \
     ref.type._class=qwen3 \
@@ -37,7 +51,7 @@ python3 training/main_async_ppo.py \
     actor.sglang.enable_memory_saver=true \
     actor.sglang.allow_auto_truncate=true \
     actor.sglang.context_length=4096 \
-    actor.sglang.mem_fraction_static=0.2 \
+    actor.sglang.mem_fraction_static=0.5 \
     actor.sglang.max_running_requests=2 \
     actor.sglang.chunked_prefill_size=2048 \
     actor.sglang.max_prefill_tokens=4096 \

@@ -1,4 +1,18 @@
 #!/bin/bash
+# Set wandb environment variables
+wandb login
+
+# Get the absolute path of the current script directory
+PWD_ABS="$(pwd)"
+
+# Set ray_temp_path to the ray directory under the parent of the current directory (absolute path)
+RAY_TEMP_PATH="$(dirname "$PWD_ABS")/ray"
+export RAY_TEMP_PATH
+
+# Set cluster.fileroot to the experiments directory under the current directory (absolute path)
+CLUSTER_FILEROOT="$PWD_ABS/experiments"
+export CLUSTER_FILEROOT
+
 python3 training/main_async_ppo.py \
     n_nodes=1 n_gpus_per_node=8 \
     allocation_mode=sglang.d4p1m1+d2p2m1 \
@@ -18,4 +32,8 @@ python3 training/main_async_ppo.py \
     max_head_offpolicyness=4 \
     flush_request_timeout=900 \
     recover_retries=30 \
-    recover_after=60 
+    recover_after=60 \
+    wandb.mode=online \
+    wandb.project=areal \
+    wandb.name=test-areal-1.7b \
+
