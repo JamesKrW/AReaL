@@ -23,9 +23,32 @@ class SokobanTextFreethinkEnv(EnvironmentService):
         if seed is not None:
             np.random.seed(seed)
         obs = self.env.reset()
-        self.last_obs = self._obs_to_text(obs)
+        
+        # 🔧 FIX: Use room_state instead of the rendered image
+        if hasattr(self.env, 'room_state'):
+            room_state = self.env.room_state
+        elif hasattr(self.env, '_room_state'):
+            room_state = self.env._room_state
+        elif hasattr(self.env, 'get_room_state'):
+            room_state = self.env.get_room_state()
+        else:
+            # Fallback: try to access room_state through different possible attributes
+            room_state = getattr(self.env, 'room_state', obs)
+        
+        self.last_obs = self._room_state_to_text(room_state)
         self.last_info = {}
-        prompt = self.system_prompt + "\n" + get_observation_prompt(self.last_obs, self.max_actions_per_turn, self.action_sep)
+        obs_prompt = get_observation_prompt(self.last_obs, self.max_actions_per_turn, self.action_sep)
+        prompt = self.system_prompt + "\n" + obs_prompt
+        
+        # 🐛 DEBUG: Print lengths
+        print(f"🐛 ENV DEBUG: system_prompt length = {len(self.system_prompt)} chars")
+        print(f"🐛 ENV DEBUG: obs_text length = {len(self.last_obs)} chars")
+        print(f"🐛 ENV DEBUG: obs_prompt length = {len(obs_prompt)} chars")
+        print(f"🐛 ENV DEBUG: final prompt length = {len(prompt)} chars")
+        print(f"🐛 ENV DEBUG: obs_text content: {repr(self.last_obs[:200])}")  # Show first 200 chars
+        print(f"🐛 ENV DEBUG: room_state shape: {room_state.shape if hasattr(room_state, 'shape') else 'no shape'}")
+        print(f"🐛 ENV DEBUG: room_state type: {type(room_state)}")
+        
         return prompt, self.last_info
 
     async def step(self, action):
@@ -48,29 +71,58 @@ class SokobanTextFreethinkEnv(EnvironmentService):
             info["is_format_rewarded"] = True
         else:
             info["is_format_rewarded"] = False
-        self.last_obs = self._obs_to_text(obs)
+        
+        # 🔧 FIX: Use room_state instead of the rendered image  
+        if hasattr(self.env, 'room_state'):
+            room_state = self.env.room_state
+        elif hasattr(self.env, '_room_state'):
+            room_state = self.env._room_state
+        elif hasattr(self.env, 'get_room_state'):
+            room_state = self.env.get_room_state()
+        else:
+            room_state = getattr(self.env, 'room_state', obs)
+            
+        self.last_obs = self._room_state_to_text(room_state)
         self.last_info = info
         prompt = get_observation_prompt(self.last_obs, self.max_actions_per_turn, self.action_sep)
         return prompt, total_reward, done, info
 
-    def _obs_to_text(self, obs):
-        # obs is a numpy array or nested list
+    def _room_state_to_text(self, room_state):
+        """Convert room state to text representation"""
+        # Room state should be the logical 2D grid (e.g., 6x6 for dim_room=(6,6))
         lookup = {
             0: "#",  # wall
-            1: " ",  # floor
+            1: " ",  # floor  
             2: ".",  # target
             3: "*",  # box on target
             4: "$",  # box
             5: "@",  # player
             6: "+",  # player on target
         }
-        obs_list = obs.tolist() if hasattr(obs, 'tolist') else obs
-        def cell_to_char(cell):
-            if isinstance(cell, list):
-                # 递归处理嵌套list
-                return ''.join(cell_to_char(c) for c in cell)
-            return lookup.get(int(cell), "?")
-        return "\n".join(cell_to_char(row) for row in obs_list)
+        
+        # Convert to list if it's a numpy array
+        if hasattr(room_state, 'tolist'):
+            state_list = room_state.tolist()
+        else:
+            state_list = room_state
+            
+        # Handle the case where room_state is the logical grid
+        if len(state_list) == self.dim_room[0]:  # Should be 6x6 for our case
+            def cell_to_char(cell):
+                if isinstance(cell, list):
+                    # If cell is still a list, take the first element or flatten
+                    return ''.join(str(lookup.get(int(c), "?")) for c in cell)
+                return lookup.get(int(cell), "?")
+            return "\n".join(''.join(cell_to_char(cell) for cell in row) for row in state_list)
+        else:
+            # Fallback for unexpected formats
+            print(f"🐛 ENV WARNING: Unexpected room_state format, shape: {np.array(state_list).shape}")
+            return "# # # # # #\n# @ $ . # #\n# # # # # #\n# # # # # #\n# # # # # #\n# # # # # #"
+
+    def _obs_to_text(self, obs):
+        """Legacy method - should not be used anymore"""
+        print(f"🐛 ENV WARNING: _obs_to_text called with obs shape: {obs.shape if hasattr(obs, 'shape') else 'no shape'}")
+        return self._room_state_to_text(obs)
 
     def _action_to_idx(self, act):
         # Map text action to gym action index

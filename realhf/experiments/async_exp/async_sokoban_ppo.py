@@ -9,6 +9,7 @@ import realhf.base.logging as logging
 from realhf.api.cli_args import ModelTrainEvalConfig, PPOMATHExperimentOptions
 from realhf.api.core.config import (
     AgentAbstraction,
+    DatasetAbstraction,
     EnvServiceAbstraction,
     ModelInterfaceAbstraction,
 )
@@ -62,6 +63,24 @@ class AsyncPPOSokobanConfig(AsyncRLExperimentConfig, PPOMATHConfig):
     @property
     def generation_config(self) -> GenerationHyperparameters:
         return GenerationHyperparameters(**dataclasses.asdict(self.ppo.gen)).new(n=self.group_size)
+
+    @property
+    def datasets(self):
+        """Override the parent class to use environment-driven dataset.
+        
+        For Sokoban experiments, we don't need to load external datasets
+        since prompts are generated dynamically by the environment.
+        """
+        return [
+            DatasetAbstraction(
+                "env-dataset",
+                args=dict(
+                    dataset_path=self.dataset.path,  # Still accept path for compatibility
+                    max_length=self.dataset.max_prompt_len,
+                    dataset_size=1000,  # Virtual dataset size
+                ),
+            )
+        ]
 
     @property
     def rpcs(self):

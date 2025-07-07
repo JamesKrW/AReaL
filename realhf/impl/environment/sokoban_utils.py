@@ -1,5 +1,39 @@
 import re
+import numpy as np
 from typing import List, Tuple, Dict
+
+def map_room_state_to_symbols(room_state: np.ndarray) -> str:
+    """
+    Maps gym_sokoban room state numbers to standard Sokoban symbols.
+    
+    Mapping:
+    0: Empty floor -> ' ' (space)
+    1: Wall -> '#'
+    2: Target/Goal -> 'O' (capital O)
+    3: Box on target -> '√' (not used in gym_sokoban typically)
+    4: Box -> 'X'
+    5: Player -> '@' (using @ instead of P for better visibility)
+    6: Box on target -> '√'
+    7: Player on target -> 'S'
+    """
+    symbol_map = {
+        0: ' ',  # Empty floor
+        1: '#',  # Wall
+        2: 'O',  # Target/Goal
+        3: '√',  # Box on target (rarely used)
+        4: 'X',  # Box
+        5: '@',  # Player
+        6: '√',  # Box on target
+        7: 'S'   # Player on target
+    }
+    
+    # Convert room_state to text representation
+    rows = []
+    for row in room_state:
+        row_str = ''.join(symbol_map.get(cell, '?') for cell in row)
+        rows.append(row_str)
+    
+    return '\n'.join(rows)
 
 def parse_freethink(response: str, special_token_list=None, action_sep=',', max_actions=3) -> Dict:
     """
@@ -50,7 +84,7 @@ def get_system_prompt(max_actions_per_step: int = 3, action_sep: str = ',') -> s
 Sokoban Quick Guide
 Goal: Push all boxes onto targets.
 Symbols:
-# Wall | _ Floor | O Target | X Box | P You | √ Box on Target | S You on Target
+# Wall | (space) Floor | O Target | X Box | @ You | √ Box on Target | S You on Target
 Rules:
 1. Push boxes (can't pull).
 2. Avoid walls.
