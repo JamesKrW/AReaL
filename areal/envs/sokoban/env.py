@@ -224,9 +224,8 @@ if __name__ == "__main__":
             action_input = f"<think>Moving towards the goal.</think><answer>{action_input}</answer>"
         
         obs, reward, done, info = env.step(action_input)
-        print(f"Observation:\n{obs['obs_str']}")
         print(f"Reward: {reward}, Done: {done}")
-        print(f"Valid actions: {info.get('actions', [])}")
+        print(f"Observation:\n{obs['obs_str']}")
         
         if done:
             print("Puzzle solved!")
