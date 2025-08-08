@@ -1,6 +1,8 @@
 
 from dataclasses import dataclass
+from areal.envs.registry import config_class
 
+@config_class("sokoban")
 @dataclass
 class SokobanEnvConfig:
     """Configuration for Sokoban environment"""
