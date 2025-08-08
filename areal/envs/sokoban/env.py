@@ -4,7 +4,9 @@ from gym_sokoban.envs.sokoban_env import SokobanEnv as GymSokobanEnv
 from areal.envs.sokoban.env_config import SokobanEnvConfig
 from areal.envs.sokoban.prompt import system_prompt, init_observation_template, action_template, format_prompt
 from areal.envs.sokoban.utils import parse_free_think
+from areal.envs.registry import env_class
 
+@env_class("sokoban")
 class SokobanEnv:
     """Simplified Sokoban Environment"""
     

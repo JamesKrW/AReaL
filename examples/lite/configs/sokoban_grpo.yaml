@@ -36,7 +36,7 @@ actor:
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: false
-  dtype: bfloat16
+  dtype: float16
   mb_spec:
     max_tokens_per_mb: 10240
   optimizer:
@@ -85,6 +85,8 @@ sglang:
   max_running_requests: null
   context_length: 32768
   mem_fraction_static: 0.8
+  attention_backend: "flashinfer"
+
 
 # datasets
 train_dataset:
@@ -133,5 +135,33 @@ stats_logger:
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   wandb:
-    mode: online
-    project: areal
+    mode: disabled
+
+
+envs:
+  - name: sokoban
+    n_envs: 10000
+    split: train
+    config:
+      dim_room: (6, 6)
+      num_boxes: 1
+  - name: sokoban
+    n_envs: 5000
+    split: train
+    config:
+      dim_room: (8, 8)
+      num_boxes: 1
+  - name: sokoban
+    n_envs: 128
+    split: valid
+    config:
+      dim_room: (6, 6)
+      num_boxes: 1
+  - name: sokoban
+    n_envs: 64
+    split: valid
+    config:
+      dim_room: (8, 8)
+      num_boxes: 1
+  
+
