@@ -83,7 +83,6 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
             ]
 
             done = False
-            last_completion_text = ""
             input_ids = self.tokenizer.apply_chat_template(
                     messages, tokenize=True, add_generation_prompt=True
                 )
@@ -99,7 +98,6 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
 
                 # Decode model output into an action string
                 completion_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True)
-                last_completion_text = completion_text
 
                 # Append token-level info to rollout arrays
                 input_len = len(resp.input_tokens) - len(seq)
@@ -122,6 +120,8 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 if done:
                     break
                 input_ids+=resp.output_tokens
+                if input_ids[-1] != self.tokenizer.eos_token_id:
+                    input_ids += [self.tokenizer.eos_token_id]
                 obs_str = next_obs["obs_str"]
                 new_messages = [{"role": "assistant", "content": "some random message."}]
                 s1 = self.tokenizer.apply_chat_template(new_messages, tokenize=True)
@@ -135,8 +135,6 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
                     new_messages, tokenize=True, add_generation_prompt=True
                 )
                 input_ids += s2[len(s1) :]
-                if input_ids[-1] != self.tokenizer.eos_token_id:
-                    input_ids += [self.tokenizer.eos_token_id]
                 t += 1
 
             # Pack rollout data into a TensorDict
@@ -150,9 +148,9 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
             )
             res = {k: v.unsqueeze(0) for k, v in res.items()}
 
-            # Reconstruct prompt string and last completion for logging
+            
             total_str = self.tokenizer.decode(
-                input_ids
+                seq
             )
 
             return (
