@@ -1,5 +1,5 @@
-experiment_name: gsm8k-grpo
-trial_name: trial0
+experiment_name: areal
+trial_name: sokoban-grpo
 allocation_mode: sglang.d4p1t1+d4p1t1
 cluster:
   fileroot: /tmp/areal/experiments
@@ -135,7 +135,8 @@ stats_logger:
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   wandb:
-    mode: disabled
+    mode: online
+    
 
 
 envs:
