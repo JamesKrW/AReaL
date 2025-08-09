@@ -7,7 +7,8 @@ import torch
 import torch.distributed as dist
 from torchdata.stateful_dataloader import StatefulDataLoader
 
-from areal.api.cli_args import GRPOConfig, load_expr_config
+from areal.api.cli_args import load_expr_config
+from areal.api.agent_args import AgentGRPOConfig
 from areal.api.io_struct import AllocationMode, FinetuneSpec, WeightUpdateMeta
 from areal.engine.ppo.actor import FSDPPPOActor
 from areal.engine.sglang_remote import RemoteSGLangEngine
@@ -15,7 +16,7 @@ from areal.utils.device import log_gpu_stats
 from areal.utils.evaluator import Evaluator
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
-from areal.workflow.rlvr import RLVRWorkflow
+from areal.workflow.multi_turn_agent_env_workflow import MultiTurnAgentEnvWorkflow
 from realhf.api.core.data_api import load_hf_tokenizer
 from realhf.base import seeding, stats_tracker
 
@@ -30,8 +31,8 @@ from areal.dataset.multi_env_dataset import build_env_dataset
 
 
 def main(args):
-    config, _ = load_expr_config(args, GRPOConfig)
-    config: GRPOConfig
+    config, _ = load_expr_config(args, AgentGRPOConfig)
+    config: AgentGRPOConfig
 
     rank = int(os.getenv("RANK"))
     world_size = int(os.getenv("WORLD_SIZE"))
@@ -96,15 +97,15 @@ def main(args):
         config.gconfig.stop_token_ids.append(tokenizer.pad_token_id)
     if tokenizer.eos_token_id not in config.gconfig.stop_token_ids:
         config.gconfig.stop_token_ids.append(tokenizer.eos_token_id)
-    workflow = RLVRWorkflow(
-        reward_fn=gsm8k_reward_fn,
+    workflow = MultiTurnAgentEnvWorkflow(
         gconfig=config.gconfig,
         tokenizer=tokenizer,
-        enable_thinking=False,
+        max_turns=3,
         dump_dir=os.path.join(
             StatsLogger.get_log_path(config.stats_logger), "generated"
         ),
     )
+    
 
     saver = Saver(config.saver, ft_spec, for_recover=False)
     stats_logger = StatsLogger(config.stats_logger, ft_spec)
