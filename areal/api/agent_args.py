@@ -16,3 +16,4 @@ class EnvSpec:
 @dataclass
 class AgentGRPOConfig(GRPOConfig):
     envs: List[EnvSpec] = field(default_factory=list)
+    max_turns: int = 5

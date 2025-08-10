@@ -16,7 +16,7 @@ from areal.utils.device import log_gpu_stats
 from areal.utils.evaluator import Evaluator
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
-from areal.workflow.multi_turn_agent_env_workflow import MultiTurnAgentEnvWorkflow
+from projects.AReaL.areal.workflow.multi_turn_agent import MultiTurnAgentEnvWorkflow
 from realhf.api.core.data_api import load_hf_tokenizer
 from realhf.base import seeding, stats_tracker
 
@@ -100,7 +100,7 @@ def main(args):
     workflow = MultiTurnAgentEnvWorkflow(
         gconfig=config.gconfig,
         tokenizer=tokenizer,
-        max_turns=3,
+        max_turns=config.max_turns,
         dump_dir=os.path.join(
             StatsLogger.get_log_path(config.stats_logger), "generated"
         ),
