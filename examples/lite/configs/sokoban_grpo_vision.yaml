@@ -144,24 +144,28 @@ envs:
     n_envs: 10000
     split: train
     config:
+      mode: vision
       dim_room: (6, 6)
       num_boxes: 1
   - name: sokoban
     n_envs: 5000
     split: train
     config:
+      mode: vision
       dim_room: (8, 8)
       num_boxes: 1
   - name: sokoban
     n_envs: 128
     split: valid
     config:
+      mode: vision
       dim_room: (6, 6)
       num_boxes: 1
   - name: sokoban
     n_envs: 64
     split: valid
     config:
+      mode: vision
       dim_room: (8, 8)
       num_boxes: 1
   
