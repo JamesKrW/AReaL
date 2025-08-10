@@ -32,7 +32,7 @@ gconfig:
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen2.5-3B-Instruct
+  path: Qwen/Qwen2.5-VL-3B-Instruct
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: false
@@ -144,28 +144,28 @@ envs:
     n_envs: 10000
     split: train
     config:
-      mode: vision
+      render_mode: vision
       dim_room: (6, 6)
       num_boxes: 1
   - name: sokoban
     n_envs: 5000
     split: train
     config:
-      mode: vision
+      render_mode: vision
       dim_room: (8, 8)
       num_boxes: 1
   - name: sokoban
     n_envs: 128
     split: valid
     config:
-      mode: vision
+      render_mode: vision
       dim_room: (6, 6)
       num_boxes: 1
   - name: sokoban
     n_envs: 64
     split: valid
     config:
-      mode: vision
+      render_render_mode: vision
       dim_room: (8, 8)
       num_boxes: 1
   
