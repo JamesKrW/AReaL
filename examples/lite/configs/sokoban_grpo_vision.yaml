@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: sokoban-grpo
+trial_name: sokoban-grpo-vision
 allocation_mode: sglang.d4p1t1+d4p1t1
 cluster:
   fileroot: /tmp/areal/experiments
