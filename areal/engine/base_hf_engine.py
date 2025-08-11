@@ -1,3 +1,4 @@
+from __future__ import annotations
 import gc
 import os
 import time
@@ -41,6 +42,63 @@ from realhf.base import constants, logging
 
 logger = logging.getLogger("Base HF Engine")
 
+import torch
+from tensordict import TensorDict
+from typing import Optional
+from torch import distributed as dist  # adjust if you wrap torch.distributed
+
+# --- These must exist in your codebase; we just reference them here ---
+# from areal.engine.utils import is_qwen2_vl_model, amend_position_ids
+# from areal.engine.pack import split_padded_tensor_dict_into_mb_list, pack_tensor_dict, pad_mb_list, unsqueeze_mb_list
+# from areal.engine.types import MicroBatchList
+
+def _take_vision_2d(mb: dict, key: str) -> Optional[torch.Tensor]:
+    """
+    Normalize a batched vision tensor for one micro-batch into 2D/N-first and slice to true length.
+    Expected inputs in mb (after unsqueeze_mb_list):
+      - key:         (1, N_max, ...)  or (N_max, ...)  or (D,) for single row
+      - key_lengths: (1,) per micro-batch (optional)
+    Returns:
+      - (N_i, ...) 2D tensor sliced to true length, or None if key absent.
+    """
+    if key not in mb:
+        return None
+    v = mb[key]
+    if not isinstance(v, torch.Tensor) or v.dim() < 1:
+        return v
+
+    # Squeeze batch if present: (1, N_max, ...) -> (N_max, ...)
+    if v.dim() >= 2 and v.size(0) == 1:
+        v = v.squeeze(0)
+
+    # Single vector case: (D,) -> (1, D)
+    if v.dim() == 1:
+        v = v.unsqueeze(0)
+
+    len_key = f"{key}_lengths"
+    if len_key in mb and isinstance(mb[len_key], torch.Tensor) and mb[len_key].numel() >= 1:
+        n = int(mb[len_key].view(-1)[0].item())
+        if v.size(0) >= n:
+            v = v[:n]
+
+    return v
+
+
+def _force_rope_inputs_2d(mb: dict, key: str, need_last_dim: int | None = None) -> Optional[torch.Tensor]:
+    """
+    Stronger variant used right before get_rope_index:
+      - squeeze leading batch
+      - convert (D,) -> (1, D)
+      - slice by *_lengths if available
+      - validate last dim if need_last_dim is set
+    """
+    x = _take_vision_2d(mb, key)
+    if x is None:
+        return None
+    if need_last_dim is not None:
+        assert x.dim() == 2 and x.size(-1) == need_last_dim, f"{key} must be (N,{need_last_dim}), got {list(x.shape)}"
+    mb[key] = x
+    return x
 
 class BaseHFEngine(TrainEngine):
     def __init__(self, config: TrainEngineConfig):
@@ -251,33 +309,40 @@ class BaseHFEngine(TrainEngine):
         assert self.lr_scheduler is not None
         self.lr_scheduler.step()
 
-    def prepare_mb_list(self, input_: TensorDict) -> MicroBatchList:
+    
+
+
+    def prepare_mb_list(self, input_: TensorDict) -> "MicroBatchList":
+        """
+        Patched prepare_mb_list:
+        - Works with variable-length vision inputs batched as (B, N_max, ...)
+        - Uses *_lengths (shape B) to slice per-micro-batch vision tensors to 2D before Qwen get_rope_index
+        - Ensures input_ids/attention_mask are [1, L] when calling get_rope_index
+        - Finally converts position_ids to [3, 1, L] for HF Qwen models
+        """
         assert "attention_mask" in input_ and "input_ids" in input_
+
         if self.is_vision_model:
-            assert (
-                "pixel_values" in input_ and "image_grid_thw" in input_
-            ), "For vision-language models, pixel_values and image_grid_thw must be present in input_"
+            assert ("pixel_values" in input_ or "pixel_values_flat" in input_), \
+                "For vision-language models, pixel_values or pixel_values_flat must be present in input_"
+            assert ("image_grid_thw" in input_ or "image_grid_thw_flat" in input_), \
+                "For vision-language models, image_grid_thw or image_grid_thw_flat must be present in input_"
+
+        # Normalize to TensorDict
         if isinstance(input_, dict):
             input_ = TensorDict(input_, batch_size=[input_["input_ids"].shape[0]])
-        if is_qwen2_vl_model(self.model_config.model_type):
-            # Create the special t,h,w position IDs for qwen 2.5 VL
-            attn_mask = input_["attention_mask"]
-            input_ids = input_["input_ids"]
-            image_grid_thw = input_.get("image_grid_thw", None)
-            video_grid_thw = input_.get("video_grid_thw", None)
-            if image_grid_thw is not None:
-                image_grid_thw = image_grid_thw.squeeze(1)
-            if video_grid_thw is not None:
-                video_grid_thw = video_grid_thw.squeeze(1)
-            position_ids, _ = self.model.model.get_rope_index(
-                input_ids, image_grid_thw, video_grid_thw, attn_mask
-            )
-            # [3, bs, seqlen] -> [bs, seqlen, 3]
-            position_ids = torch.einsum("ijk->jki", position_ids)
-            input_["position_ids"] = position_ids
-        else:
-            input_ = amend_position_ids(input_)
 
+        need_qwen_rope = self.is_qwen2_vl_model(self.model_config.model_type) \
+            if hasattr(self, "is_qwen2_vl_model") else is_qwen2_vl_model(self.model_config.model_type)
+
+        # Non-Qwen: keep original behavior (compute generic position ids early)
+        if not need_qwen_rope:
+            if hasattr(self, "amend_position_ids"):
+                input_ = self.amend_position_ids(input_)
+            else:
+                input_ = amend_position_ids(input_)
+
+        # 1) split / pack / pad
         mb_list = split_padded_tensor_dict_into_mb_list(input_, self.config.mb_spec)
         mb_list.mbs = [pack_tensor_dict(mb) for mb in mb_list.mbs]
         mb_list = pad_mb_list(
@@ -285,36 +350,65 @@ class BaseHFEngine(TrainEngine):
             pad_value=0.0,
             pad_to_maximum=self.config.pad_to_maximum,
         )
-        logger.info(
-            f"Microbatch #tokens (rank {dist.get_rank()}): {mb_list.group_lens}, "
-            f"padded to: {mb_list.padded_to_lengths}, padding lengths: {mb_list.padding_lengths}"
-        )
-        # NOTE: We unsqueeze here because huggingface transformer models requires
-        # packed input to be of shape [1, total_seqlen].
-        mb_list = unsqueeze_mb_list(mb_list)
-        if is_qwen2_vl_model(self.model_config.model_type):
-            for mb in mb_list.padded_mbs:
-                # [1, total_seqlen, 3] -> [3, 1, total_seqlen]
-                mb["position_ids"] = torch.einsum("ijk->kij", mb["position_ids"])
+        
 
-        # FIXME: the resulting max_seqlen is a tensor rather than an integer
-        # TODO: remove the usage of tensordict
-        # Modern model implementations takes a dict as the input.
-        # This eliminates a bug of Qwen2.5-VL for transformers<=4.53.1
+        # 2) HF expects [1, L]
+        mb_list = unsqueeze_mb_list(mb_list)
+
+        # 3) Qwen2.5-VL: per-micro-batch get_rope_index AFTER slicing vision to 2D
+        if need_qwen_rope:
+            for col in (mb_list.mbs, mb_list.padded_mbs):
+                for mb in col:
+                    # Ensure input_ids / attention_mask are [1, L]
+                    if isinstance(mb["input_ids"], torch.Tensor) and mb["input_ids"].dim() == 1:
+                        mb["input_ids"] = mb["input_ids"].unsqueeze(0)
+                    assert mb["input_ids"].dim() == 2, f"input_ids must be [1, L], got {list(mb['input_ids'].shape)}"
+
+                    attn_mask = mb.get("attention_mask", None)
+                    if isinstance(attn_mask, torch.Tensor) and attn_mask.dim() == 1:
+                        attn_mask = attn_mask.unsqueeze(0)
+                    if isinstance(attn_mask, dict):
+                        attn_mask = None
+
+                    # Slice vision to 2D/N-first using *_lengths
+                    _force_rope_inputs_2d(mb, "image_grid_thw", need_last_dim=3)        # (N_img, 3)
+                    _force_rope_inputs_2d(mb, "video_grid_thw", need_last_dim=3)        # (N_vid, 3)
+                    _force_rope_inputs_2d(mb, "second_per_grid_ts", need_last_dim=None) # (N_vid,) or (N_vid,1)
+
+                    # Call Qwen's rope builder
+                    position_ids, _ = self.model.model.get_rope_index(
+                        input_ids=mb["input_ids"],                   # [1, L]
+                        image_grid_thw=mb.get("image_grid_thw"),     # (N_img, 3) or None
+                        video_grid_thw=mb.get("video_grid_thw"),     # (N_vid, 3) or None
+                        second_per_grid_ts=mb.get("second_per_grid_ts"),  # 1D or None
+                        attention_mask=attn_mask,                    # [1, L] or None
+                    )
+                    # Temporarily store as [1, L, 3]; convert to [3, 1, L] before forward
+                    mb["position_ids"] = torch.einsum("ijk->jki", position_ids)
+
+        # 4) Convert tensordict → plain dict
         for i, mb in enumerate(mb_list.mbs):
             mb_list.mbs[i] = dict(**mb)
         for i, mb in enumerate(mb_list.padded_mbs):
             mb_list.padded_mbs[i] = dict(**mb)
+
+        # 5) Final fixes & shape adjustments right before model forward
         for mb in mb_list.mbs:
             mb["max_seqlen"] = int(mb["max_seqlen"])
             mb["cu_seqlens_q"] = mb["cu_seqlens_k"] = mb["cu_seqlens"]
             mb["use_cache"] = False
             mb["attention_mask"] = dict(full_attention=None)
+            if need_qwen_rope and "position_ids" in mb:
+                # [1, L, 3] -> [3, 1, L]
+                mb["position_ids"] = torch.einsum("ijk->kij", mb["position_ids"])
+
         for mb in mb_list.padded_mbs:
             mb["max_seqlen"] = int(mb["max_seqlen"])
             mb["cu_seqlens_q"] = mb["cu_seqlens_k"] = mb["cu_seqlens"]
             mb["use_cache"] = False
             mb["attention_mask"] = dict(full_attention=None)
+            if need_qwen_rope and "position_ids" in mb:
+                mb["position_ids"] = torch.einsum("ijk->kij", mb["position_ids"])
 
         return mb_list
 
