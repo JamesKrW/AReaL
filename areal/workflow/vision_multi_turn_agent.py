@@ -2,26 +2,70 @@
 import asyncio
 import os
 import uuid
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 
 import colorama
 import torch
 from tensordict import TensorDict
 from transformers import AutoProcessor, PreTrainedTokenizerFast
 from PIL import Image
-
+from typing import Any, Dict, List, Optional, Tuple
 from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
-from areal.api.io_struct import VLMRequest
+from areal.api.io_struct import VLMRequest,LLMRequest
 from areal.api.workflow_api import RolloutWorkflow
-from areal.utils.data import concat_padded_tensors
+from areal.utils.data_pad import concat_padded_tensors
 from areal.utils.image import image2base64
 from realhf.base import logging
-
+from areal.dataset.clevr_count_70k import convert_image
 from areal.envs.utils.env_load_utils import load_env_from_registry  # Unified env loading
 
 logger = logging.getLogger("Vision Multi-Turn AgentEnv workflow")
 
+def _count_img_segments(text: str, processor: AutoProcessor) -> int:
+    import re
+    iproc = getattr(processor, "image_processor", None)
+    if iproc and hasattr(iproc, "image_processor_type") and "qwen" in str(iproc.image_processor_type).lower():
+        return len(re.findall(r"<\|vision_start\|>", text))
+    image_tok = getattr(processor, "image_token", "<image>")
+    return text.count(image_tok)
+
+
+def processor_output(
+    processor: AutoProcessor,
+    text_with_placeholders: str,
+    new_images: List[Image.Image],
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+    
+    if not new_images:
+        return None, None
+    k = _count_img_segments(text_with_placeholders, processor)
+    if k != len(new_images):
+        raise ValueError(f"mismatch between place holders: {k} and images: {len(new_images)}")
+    out = processor(text=text_with_placeholders, images=new_images, padding=False, return_tensors="pt")
+    return out
+
+
+def extract_images_from_multimodal_data(
+    multi_modal_data: Dict[str, Any],
+    image_placeholder: str = "<image>",
+) -> List[Image.Image]:
+    """
+    Extract a list of PIL images from env.obs['multi_modal_data'] for a given placeholder.
+    """
+    image_list = multi_modal_data[image_placeholder]
+    images: List[Image.Image] = []
+    for img in image_list:
+        images.append(img if isinstance(img, Image.Image) else convert_image(img))
+    return images
+
+def get_text_with_image_token(text_content: str, image_placeholder, processor) -> str:
+    if "qwen" in processor.image_processor.image_processor_type.lower():
+        image_token = "<|vision_start|><|image_pad|><|vision_end|>"
+    else:
+        image_token = processor.image_token if processor is not None else "<image>"
+    return text_content.replace(image_placeholder, image_token)
+    
 
 class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     """
@@ -52,266 +96,186 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         if self.dump_dir is not None and not os.path.exists(self.dump_dir):
             os.makedirs(self.dump_dir, exist_ok=True)
 
-    def _extract_images_from_multimodal_data(self, multi_modal_data: Dict[str, Any]) -> List[Image.Image]:
-        """
-        Extract PIL Images from multi_modal_data using the specified image placeholder.
-        
-        Args:
-            multi_modal_data: Dictionary with placeholder keys and data lists as values
-            
-        Returns:
-            List of PIL Images corresponding to self.image_placeholder
-        """
-        if not multi_modal_data or self.image_placeholder not in multi_modal_data:
-            return []
-        
-        image_list = multi_modal_data[self.image_placeholder]
-        if not isinstance(image_list, list):
-            logger.warning(f"Expected list for {self.image_placeholder}, got {type(image_list)}")
-            return []
-        
-        images = []
-        for img in image_list:
-            if isinstance(img, Image.Image):
-                images.append(img)
-            else:
-                logger.warning(f"Unexpected image type: {type(img)}, expected PIL.Image")
-        
-        return images
 
-    def _construct_messages_with_images(self, text_content: str, images: List[Image.Image]) -> List[Dict[str, Any]]:
-        """
-        Construct messages list for the processor, handling image placeholders.
-        
-        Args:
-            text_content: Text with image placeholders
-            images: List of PIL Images
-            
-        Returns:
-            Messages list compatible with the processor
-        """
-        # Count placeholders in text
-        placeholder_count = text_content.count(self.image_placeholder)
-        
-        if placeholder_count != len(images):
-            logger.warning(
-                f"Mismatch: {placeholder_count} placeholders but {len(images)} images. "
-                f"Adjusting to use min({placeholder_count}, {len(images)}) images."
-            )
-        
-        # Use the minimum of available images and placeholders
-        num_images_to_use = min(placeholder_count, len(images))
-        images_to_use = images[:num_images_to_use]
-        
-        # For now, we'll construct a simple message structure
-        # This might need adjustment based on your specific processor requirements
-        message = {
-            "role": "user",
-            "content": text_content,
-            "images": images_to_use  # Some processors expect images in the message
-        }
-        
-        return [message]
-
-    async def _run_one_episode(self, engine: InferenceEngine, data: dict, rid: str):
-        """
-        Run a single environment episode with multi-turn LLM interaction supporting vision.
-
-        Args:
-            data: Example:
-                {'name': 'sokoban', 'seed': 691527629, 'config': {...}}
-            rid: Unique run ID for logging/tracking.
-
-        Returns:
-            Tuple:
-                - TensorDict rollout data
-                - Prompt string
-                - Final completion string
-                - Cumulative reward
-                - Sequence length
-        """
+    async def _run_one_episode(self, engine: InferenceEngine, data: dict, rid: str) -> TensorDict:
+        # ensure env can close
         env, seed = load_env_from_registry(data)
-
-        # Rollout accumulators
-        seq, logprobs, loss_mask, versions = [], [], [], []
-        cumulative_reward = 0.0
-        t = 0
-        
-        # Track accumulated images across turns for proper tensor construction
-        all_images = []
-
         try:
-            # Reset environment and get initial observation
             init_obs, _ = env.reset(seed=seed)
-            
             sys_prompt = env.get_system_prompt()
-            obs_str = init_obs["obs_str"]
-            multi_modal_data = init_obs.get("multi_modal_data", {})
-            
-            # Extract images from the initial observation
-            current_images = self._extract_images_from_multimodal_data(multi_modal_data)
-            all_images.extend(current_images)
-            
-            # Construct conversation context with vision support
+
+            # Running media state (all images encountered so far, in order)
+            all_images: List[Image.Image] = []
+
+            # Rollout accumulators (we will append deltas only)
+            input_ids: List[int] = []     # running prompt ids (what we send to the engine)
+            logprobs:  List[float] = []   # per-token logprobs (assistant tokens; user tokens are zeros)
+            loss_mask: List[int] = []     # 1 for assistant tokens to train; 0 otherwise
+            versions:  List[int] = []     # fill with -1
+            cumulative_reward = 0.0
+            t = 0
+
+            # Visual segments (only for newly added images per user turn)
+            pv_segs: List[torch.Tensor] = []
+            thw_segs: List[torch.Tensor] = []
+
+            # Helper: processor encode to ids with optional images
+            def _proc_ids(text: str, images: List[Image.Image]) -> List[int]:
+                out = self.processor(text=text, images=images if images else None,
+                                    padding=False, return_tensors="pt")
+                return out["input_ids"][0].tolist()
+
+            # Helper: get visual tensors only for new images of THIS user turn
+            def _proc_visual_for_new_imgs(text_with_placeholders: str,
+                                        new_images: List[Image.Image]) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+                if not new_images:
+                    return None, None
+                out = self.processor(text=text_with_placeholders, images=new_images,
+                                    padding=False, return_tensors="pt")
+                pv  = out.get("pixel_values", None)
+                thw = out.get("image_grid_thw", None)
+                return pv, thw
+
+            # -------------------- Initialize messages and initial user delta --------------------
             messages = [
-                {"role": "system", "content": sys_prompt}
+                {"role": "system", "content": get_text_with_image_token(sys_prompt, self.image_placeholder, self.processor)},
+                {"role":"user","content":get_text_with_image_token(init_obs["obs_str"], self.image_placeholder, self.processor)}
             ]
-            
-            # Add user message with images
-            if current_images:
-                user_message = {
-                    "role": "user", 
-                    "content": obs_str,
-                    "images": current_images
-                }
-            else:
-                user_message = {"role": "user", "content": obs_str}
-            
-            messages.append(user_message)
 
-            done = False
             
-            # Process the initial input
-            if all_images:
-                processed_input = self.processor(
-                    images=all_images,
-                    text=messages,
-                    padding=False,
-                    return_tensors="pt",
-                )
-                input_ids = processed_input["input_ids"].tolist()[0]
-                pixel_values = processed_input["pixel_values"]
-                image_grid_thw = processed_input["image_grid_thw"]
-                byte_images = image2base64(all_images)
-            else:
-                # Fallback to text-only processing
-                input_ids = self.tokenizer.apply_chat_template(
-                    messages, tokenize=True, add_generation_prompt=True
-                )
-                pixel_values = None
-                image_grid_thw = None
-                byte_images = None
+            init_new_imgs  = extract_images_from_multimodal_data(init_obs.get("multi_modal_data", {}), self.image_placeholder)
 
-            while not done and t < self.max_turns:
-                # Generate assistant reply
-                if byte_images is not None:
+            
+            curr_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            curr_ids = _proc_ids(curr_prompt_text, all_images + init_new_imgs)
+
+            # Delta for the initial USER segment
+            
+            input_ids.extend(curr_ids)
+            logprobs.extend([0.0] * len(curr_ids))   # user segment: no logprobs
+            loss_mask.extend([0] * len(curr_ids))    # user segment: not trained
+            versions.extend([-1] * len(curr_ids))
+
+            # Record visual tensors only for the newly added images of this turn
+            if init_new_imgs:
+                pv, thw = _proc_visual_for_new_imgs(curr_prompt_text, init_new_imgs)
+                if pv is not None:
+                    pv_segs.append(pv)
+                if thw is not None:
+                    thw_segs.append(thw)
+                # Now these images become part of the running media state
+                all_images.extend(init_new_imgs)
+
+            # -------------------- Main loop: assistant -> env -> next user (delta) --------------------
+            while t < self.max_turns:
+                # ASSISTANT generation: call engine with current incremental prompt_ids and all_images
+                img_b64 = image2base64(all_images) if len(all_images) > 0 else None
+                if img_b64 is not None:
                     req = VLMRequest(
                         rid=rid,
-                        input_ids=input_ids,
-                        image_data=byte_images,
+                        input_ids=input_ids,     # incremental; DO NOT re-encode the whole prompt
+                        image_data=img_b64,
                         gconfig=self.gconfig.new(n_samples=1),
                     )
                 else:
-                    # Fallback to LLMRequest for text-only
-                    from areal.api.io_struct import LLMRequest
                     req = LLMRequest(
                         rid=rid,
                         input_ids=input_ids,
                         gconfig=self.gconfig.new(n_samples=1),
                     )
-                
+
                 resp = await engine.agenerate(req)
+               
+                
+                # Append assistant outputs
+                input_ids+=resp.output_tokens
+                logprobs+=resp.output_logprobs
+                loss_mask+=[1] * len(resp.output_tokens) 
+                versions+=resp.output_versions
+                
+                eos_id = self.tokenizer.eos_token_id
+                if eos_id is not None and (len(resp.output_tokens) == 0 or input_ids[-1] != eos_id):
+                    input_ids.append(eos_id)
+                    logprobs.append(0.0)
+                    loss_mask.append(0)
+                    versions.append(-1)
 
-                # Decode model output into an action string
-                completion_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True)
+                # Decode assistant text for env step
+                assistant_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True)
+                messages.append({"role": "assistant", "content": assistant_text})
 
-                # Append token-level info to rollout arrays
-                input_len = len(resp.input_tokens) - len(seq)
-                assert len(seq) == 0 or resp.input_tokens[:-input_len] == seq, (
-                    seq,
-                    resp.input_tokens[:-input_len],
-                    len(seq),
-                    len(resp.input_tokens[:-input_len]),
-                )
-                seq += resp.input_tokens[-input_len:] + resp.output_tokens
-                logprobs += [0.0] * input_len + resp.output_logprobs
-                loss_mask += [0] * input_len + [1] * resp.output_len
-                versions += [-1] * input_len + resp.output_versions
-
-                # Step the environment with the generated action string
-                next_obs, step_reward, done, info = env.step(completion_text)
-                cumulative_reward += float(step_reward)
-
+                # Step environment
+                next_obs, r, done, _ = env.step(assistant_text)
+                cumulative_reward += float(r)
                 if done:
                     break
 
-                # Prepare for next turn
-                input_ids += resp.output_tokens
-                if input_ids[-1] != self.tokenizer.eos_token_id:
-                    input_ids += [self.tokenizer.eos_token_id]
-                
-                # Get new observation
-                obs_str = next_obs["obs_str"]
-                new_multi_modal_data = next_obs.get("multi_modal_data", {})
-                new_images = self._extract_images_from_multimodal_data(new_multi_modal_data)
-                
-                # Add new images to the accumulated set
-                all_images.extend(new_images)
-                
-                # Construct the next user message
-                if new_images:
-                    # If there are new images, we need to reprocess everything
-                    # This is necessary because the processor needs to see all images together
-                    messages.append({"role": "assistant", "content": completion_text})
-                    messages.append({
-                        "role": "user",
-                        "content": obs_str,
-                        "images": new_images
-                    })
-                    
-                    # Reprocess with all accumulated images
-                    processed_input = self.processor(
-                        images=all_images,
-                        text=messages,
-                        padding=False,
-                        return_tensors="pt",
-                    )
-                    input_ids = processed_input["input_ids"].tolist()[0]
-                    pixel_values = processed_input["pixel_values"] 
-                    image_grid_thw = processed_input["image_grid_thw"]
-                    byte_images = image2base64(all_images)
-                else:
-                    # Text-only turn, use the simpler approach
-                    new_messages = [{"role": "assistant", "content": "some random message."}]
-                    s1 = self.tokenizer.apply_chat_template(new_messages, tokenize=True)
-                    new_messages += [{"role": "user", "content": obs_str}]
-                    s2 = self.tokenizer.apply_chat_template(
-                        new_messages, tokenize=True, add_generation_prompt=True
-                    )
-                    input_ids += s2[len(s1):]
-                
+                # NEXT USER turn: build delta (add only new text part)
+                next_user_text = get_text_with_image_token(next_obs["obs_str"], self.image_placeholder, self.processor)
+                new_imgs = extract_images_from_multimodal_data(next_obs.get("multi_modal_data", {}), self.image_placeholder)
+
+                # prev prompt before adding the new user (gen prompt ON)
+                prev_len = len(input_ids)  # the length of the prompt we actually sent/hold
+                prev_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                # (Optional sanity) The ids below should match input_ids; we avoid recomputation to keep it incremental.
+
+                # Append the new user to messages and compute current prompt ids (locally) to take delta
+                messages.append({"role": "user", "content": next_user_text})
+                curr_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                curr_ids = _proc_ids(curr_prompt_text, all_images + new_imgs)
+
+                # Delta is the suffix beyond the previously materialized prompt length
+                delta_ids = curr_ids[prev_len:]
+                input_ids += delta_ids
+                logprobs += [0.0] * len(delta_ids)  # user segment: no logprobs
+                loss_mask += [0] * len(delta_ids)   # user segment: not trained
+                versions += [-1] * len(delta_ids)
+
+                # Visual tensors only for newly added images of this user turn
+                if new_imgs:
+                    pv, thw = _proc_visual_for_new_imgs(next_user_text, new_imgs)
+                    if pv is not None:
+                        pv_segs.append(pv)
+                    if thw is not None:
+                        thw_segs.append(thw)
+                    all_images.extend(new_imgs)
+
                 t += 1
 
-            # Pack rollout data into a TensorDict
-            res = dict(
-                input_ids=torch.tensor(seq),
-                logprobs=torch.tensor(logprobs),
-                loss_mask=torch.tensor(loss_mask),
-                versions=torch.tensor(versions),
-                rewards=torch.tensor(float(cumulative_reward)),
-                attention_mask=torch.ones(len(seq), dtype=torch.bool),
-            )
-            
-            # Add vision-specific data if available
-            if pixel_values is not None:
-                res["pixel_values"] = pixel_values
-                res["image_grid_thw"] = image_grid_thw
-            
-            res = {k: v.unsqueeze(0) for k, v in res.items()}
+            # -------------------- Pack results --------------------
+            L = len(input_ids)
+            res: Dict[str, torch.Tensor] = {
+                "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0),
+                "attention_mask": torch.ones(1, L, dtype=torch.bool),
+                "loss_mask": torch.tensor(loss_mask, dtype=torch.long).unsqueeze(0),
+                "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
+                "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
+                "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
+            }
 
-            total_str = self.tokenizer.decode(seq)
+            if len(pv_segs) > 0:
+                # per-turn vision is concatenated on dim=0 → add batch on dim=0
+                res["pixel_values"] = torch.cat(pv_segs, dim=0).unsqueeze(0)      # (1, sum_tokens_over_new_imgs, D)
+            if len(thw_segs) > 0:
+                res["image_grid_thw"] = torch.cat(thw_segs, dim=0).unsqueeze(0)   # (1, sum_new_images, 3)
 
+            total_str = self.tokenizer.decode(input_ids)
             return (
                 TensorDict(res, batch_size=[1]),
                 total_str,
                 cumulative_reward,
-                len(seq),
+                len(input_ids),
             )
+
         finally:
             try:
                 env.close()
             except Exception:
                 pass
+
+
+
+       
 
     async def arun_episode(self, engine: InferenceEngine, data: dict):
         """
