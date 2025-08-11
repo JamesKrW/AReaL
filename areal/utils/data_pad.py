@@ -1,38 +1,11 @@
 import torch
-from typing import List
-from tensordict import TensorDict
-# Copyright 2025 Ant Group Inc.
-# Licensed under the Apache License, Version 2.0
-
-# Pad/unpad operations are modified from flash-attention under BSD-3 license.
-# Copyright (c) 2023, Tri Dao.
-
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
-
-import numpy as np
-import torch
-import torch.distributed as dist
-import torch.nn.functional as F
-from einops import rearrange
+from typing import List, Tuple, Dict
 from tensordict import TensorDict
 
-from areal.api.cli_args import MicroBatchSpec
-from realhf.base import datapack, logging
-
-logger = logging.getLogger("data_pad utils")
 def _right_pad_dim1(x: torch.Tensor, target_len: int, pad_value: float = 0.0) -> torch.Tensor:
     """
     Right-pad a tensor along dimension 1 to `target_len`.
-    Preserves all other dimensions unchanged.
-
-    Args:
-        x: Input tensor of shape (B, N, ...).
-        target_len: Desired length along dim=1 after padding.
-        pad_value: Value to fill in the padded positions.
-
-    Returns:
-        Tensor padded along dim=1 to shape (B, target_len, ...).
+    Works for any rank >= 2. Shape: (B, L, *tail) -> (B, target_len, *tail)
     """
     if x.size(1) == target_len:
         return x
@@ -41,99 +14,159 @@ def _right_pad_dim1(x: torch.Tensor, target_len: int, pad_value: float = 0.0) ->
     pad = x.new_full(pad_shape, pad_value)
     return torch.cat([x, pad], dim=1)
 
-def concat_padded_tensors(
-    tensor_dicts: List[TensorDict], pad_value: float = 0.0
-) -> TensorDict:
+def _concat_ragged_and_offsets(
+    xs: List[torch.Tensor],
+    squeeze_leading_batch: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Concatenate multiple TensorDicts along the batch dimension (dim=0),
-    padding sequences along dim=1 so that all tensors for the same key
-    have matching shapes.
-
-    This function is designed for multi-sample rollouts where:
-    - Text-related fields (input_ids, attention_mask, etc.) may have
-      variable sequence lengths.
-    - Vision-related fields (pixel_values, image_grid_thw) may have
-      variable numbers of images/tokens per sample.
-    - Scalar or 1D tensors (e.g., rewards) are concatenated directly.
-
-    Padding rules:
-    - Text fields are padded to the max sequence length determined from
-      attention_mask.
-    - Visual fields are padded separately to their own max length (dim=1).
-    - Missing keys in a sample are filled with empty tensors of shape
-      (B, 0, *tail) before padding.
-
-    Args:
-        tensor_dicts: List of TensorDict objects, each representing one sample.
-        pad_value: Value used for padding non-mask fields.
+    Concatenate a list of variable-length tensors along dim=0 and
+    return (flat_tensor, offsets). Each element is assumed to have shape:
+      - (N_i, *tail)         if squeeze_leading_batch=False or already squeezed
+      - (1, N_i, *tail)      if squeeze_leading_batch=True (we will squeeze(0) to (N_i, *tail))
 
     Returns:
-        A single TensorDict containing concatenated and padded tensors.
+      flat:     torch.Tensor with shape (sum_i N_i, *tail)
+      offsets:  torch.LongTensor of shape (B+1,), prefix sums with offsets[0]=0
+    """
+    pieces = []
+    lengths = []
+    for x in xs:
+        t = x
+        if squeeze_leading_batch and t.dim() >= 2 and t.size(0) == 1:
+            t = t.squeeze(0)  # (N_i, *tail)
+        # Allow empty per-sample tensors (N_i == 0)
+        n_i = t.size(0) if t.dim() >= 1 else 0
+        pieces.append(t)
+        lengths.append(n_i)
+
+    # Handle the case with all-zero lengths
+    total = sum(lengths)
+    if total == 0:
+        # Build an empty tensor with a reasonable inferred dtype/device from the first non-empty
+        ref = next((p for p in pieces if p.numel() > 0), None)
+        if ref is None:
+            # Fallback: use float32 CPU 1D zero tensor
+            flat = torch.empty((0,), dtype=torch.float32)
+        else:
+            flat = ref.new_empty((0, *ref.shape[1:]))
+        offsets = torch.zeros(len(xs) + 1, dtype=torch.long, device=flat.device)
+        return flat, offsets
+
+    flat = torch.cat(pieces, dim=0)
+    offsets = torch.tensor([0] + list(torch.as_tensor(lengths).cumsum(0).tolist()),
+                           dtype=torch.long, device=flat.device)
+    return flat, offsets
+
+def concat_padded_tensors(
+    tensor_dicts: List[TensorDict],
+    pad_value: float = 0.0,
+    ragged_keys: Tuple[str, ...] = ("pixel_values", "image_grid_thw", "video_grid_thw", "second_per_grid_ts"),
+) -> TensorDict:
+    """
+    Batch-concatenate a list of TensorDicts:
+
+    - Text-like fields (variable sequence length along dim=1) are padded to the
+      max length derived from 'attention_mask', then concatenated along dim=0.
+
+    - Vision-like fields (ragged) are NOT padded into a fake batch. Instead, we
+      build:
+        * a single flat tensor concatenated along dim=0 across samples, and
+        * a companion '<key>_offsets' of shape (B+1) so you can slice per-sample
+          ranges later (Plan B).
+
+      Examples:
+        image_grid_thw: (1, N_i, 3) or (N_i, 3) per sample   → flat (sum N_i, 3) + offsets
+        pixel_values:   (1, N_i, C, H, W) → (sum N_i, C, H, W) + offsets
+
+    - 1D tensors (e.g., rewards with shape (B,)) are concatenated along dim=0 as-is.
+
+    Returns:
+      A TensorDict containing:
+        - Padded & concatenated text fields (e.g., input_ids, attention_mask, ...)
+        - For each ragged key 'k':
+            k_flat:       concatenated flat tensor
+            k_offsets:    LongTensor (B+1) prefix sums
     """
     if not tensor_dicts:
         return TensorDict()
 
-    # Compute new batch size (sum over dim=0 of each TensorDict)
+    # New batch size: sum of per-sample batch sizes along dim=0
     batch_sizes = [tuple(d.batch_size) for d in tensor_dicts]
-    new_batch_size = [sum(bs[0] for bs in batch_sizes), *batch_sizes[0][1:]]
+    B = sum(bs[0] for bs in batch_sizes)
+    new_batch_size = [B, *batch_sizes[0][1:]]
 
-    # Determine max sequence length for text fields
-    assert all("attention_mask" in td for td in tensor_dicts), "Missing attention_mask in some TensorDicts"
+    # --- Text padding target ---
+    assert all("attention_mask" in td for td in tensor_dicts), "Missing 'attention_mask' in some TensorDicts."
     text_max_len = max(td["attention_mask"].shape[1] for td in tensor_dicts)
 
-    # Determine max sequence length (dim=1) for visual fields
-    def _key_max_len(key: str) -> int:
-        lens = [td[key].shape[1] for td in tensor_dicts if key in td.keys()]
-        return max(lens) if lens else 0
-
-    pv_max_len  = _key_max_len("pixel_values")
-    thw_max_len = _key_max_len("image_grid_thw")
-
-    # Collect all keys across all samples (not just from the first sample)
+    # Gather all keys present in any sample
     all_keys = set()
     for td in tensor_dicts:
         all_keys |= set(td.keys())
 
-    result = {}
+    result: Dict[str, torch.Tensor] = {}
+
+    # First pass: handle ragged vision keys into flat+offsets; skip adding the original key
     for key in all_keys:
-        tensors = []
+        if key not in ragged_keys:
+            continue
+        vals = [td[key] for td in tensor_dicts if key in td.keys()]
+        if len(vals) == 0:
+            # Nothing to do for this key
+            continue
 
-        # Decide padding length and pad value per key type
-        if key == "pixel_values":
-            target_len = pv_max_len
-            key_pad = 0.0  # Fill pixel data with zeros
-        elif key == "image_grid_thw":
-            target_len = thw_max_len
-            key_pad = 0   # Fill grid indices with zeros
-        else:
-            target_len = text_max_len
-            key_pad = pad_value
-
-        # Find a reference tensor to infer tail shape for empty placeholders
-        ref_tensor = next((td[key] for td in tensor_dicts if key in td.keys()), None)
+        # Build a per-sample list aligned to tensor_dicts (missing → empty)
+        aligned_vals = []
+        ref = vals[0]
+        tail = ref.shape[2:] if (ref.dim() >= 3 and ref.size(0) == 1) else (ref.shape[1:] if ref.dim() >= 2 else ())
+        device = ref.device
+        dtype = ref.dtype
 
         for td in tensor_dicts:
+            if key in td.keys():
+                aligned_vals.append(td[key])
+            else:
+                # Missing → create (1, 0, *tail) or (0, *tail) so that squeeze works uniformly
+                empty = torch.empty((1, 0, *tail), dtype=dtype, device=device) if len(tail) > 0 else torch.empty((1, 0), dtype=dtype, device=device)
+                aligned_vals.append(empty)
+
+        flat, offsets = _concat_ragged_and_offsets(aligned_vals, squeeze_leading_batch=True)
+        result[f"{key}_flat"] = flat
+        result[f"{key}_offsets"] = offsets
+
+    # Second pass: handle non-ragged keys with text padding
+    for key in all_keys:
+        if key in ragged_keys:
+            # The original ragged tensors are not included; we provide *_flat + *_offsets instead.
+            continue
+
+        tensors = []
+        for td in tensor_dicts:
             if key not in td.keys():
-                # If this sample is missing the key, create an empty tensor
-                if ref_tensor is None:
-                    # All samples missing the key → skip
+                # If a sample is missing this key, create a matching empty/padded tensor
+                # Try to infer from any existing tensor for this key
+                ref = next((tdd[key] for tdd in tensor_dicts if key in tdd.keys()), None)
+                if ref is None:
+                    # Skip entirely if no sample contains this key
                     tensors = []
                     break
-                B = td.batch_size[0]
-                tail = ref_tensor.shape[2:] if ref_tensor.dim() >= 2 else ()
-                empty = ref_tensor.new_empty((B, 0, *tail)) if tail else ref_tensor.new_empty((B,))
-                tensor = empty
-            else:
-                tensor = td[key]
-
-            # Scalars or 1D tensors can be concatenated directly
-            if tensor.dim() == 1:
-                tensors.append(tensor)
+                if ref.dim() == 1:
+                    tensors.append(ref.new_empty((0,)))
+                else:
+                    # Create (B_i, 0, *tail)
+                    Bi = td.batch_size[0]
+                    tail = ref.shape[2:]
+                    empty = ref.new_empty((Bi, 0, *tail)) if len(tail) > 0 else ref.new_empty((Bi, 0))
+                    tensors.append(empty)
                 continue
 
-            # Pad sequences along dim=1
-            tensor = _right_pad_dim1(tensor, target_len, key_pad)
-            tensors.append(tensor)
+            t = td[key]
+            if t.dim() == 1:
+                tensors.append(t)
+            else:
+                # Pad along dim=1 to text_max_len (for text-like tensors)
+                t = _right_pad_dim1(t, text_max_len, pad_value if key != "attention_mask" else 0)
+                tensors.append(t)
 
         if not tensors:
             continue
