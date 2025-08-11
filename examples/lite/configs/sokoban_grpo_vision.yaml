@@ -90,7 +90,7 @@ sglang:
 
 # datasets
 train_dataset:
-  batch_size: 256
+  batch_size: 16
   shuffle: true
   pin_memory: true
   num_workers: 4
@@ -165,7 +165,7 @@ envs:
     n_envs: 64
     split: valid
     config:
-      render_render_mode: vision
+      render_mode: vision
       dim_room: (8, 8)
       num_boxes: 1
   
