@@ -42,8 +42,8 @@ actor:
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: false
-  #dtype: bfloat16 
-  dtype: float16 # for rtx 8000
+  dtype: bfloat16 
+  #dtype: float16 # for rtx 8000
   mb_spec:
     max_tokens_per_mb: 10240
   optimizer:
@@ -90,7 +90,7 @@ sglang:
   max_running_requests: null
   context_length: 32768
   mem_fraction_static: 0.8
-  attention_backend: flashinfer # for rtx 8000
+  #attention_backend: flashinfer # for rtx 8000
 
 # datasets
 train_dataset:

@@ -178,6 +178,7 @@ def main(args):
         if ref is not None:
             with stats_tracker.record_timing("ref_logp"):
                 batch["ref_logp"] = ref.compute_logp(batch)
+
                 log_gpu_stats("ref logp")
 
         with stats_tracker.record_timing("compute_advantage"):
