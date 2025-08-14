@@ -16,7 +16,7 @@ from areal.utils.device import log_gpu_stats
 from areal.utils.evaluator import Evaluator
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
-from projects.AReaL.areal.workflow.multi_turn_agent import MultiTurnAgentEnvWorkflow
+from AReaL.areal.workflow.multi_turn_agent import MultiTurnAgentEnvWorkflow
 from realhf.api.core.data_api import load_hf_tokenizer
 from realhf.base import seeding, stats_tracker
 
