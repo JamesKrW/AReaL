@@ -255,7 +255,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 res["pixel_values"] = torch.cat(pv_segs, dim=0).unsqueeze(0)      # (1, sum_tokens_over_new_imgs, D)
             if len(thw_segs) > 0:
                 res["image_grid_thw"] = torch.cat(thw_segs, dim=0).unsqueeze(0)   # (1, sum_new_images, 3)
-            print(res["pixel_values"].shape, res["image_grid_thw"].shape)
+            #print(res["pixel_values"].shape, res["image_grid_thw"].shape)
             total_str = self.tokenizer.decode(input_ids)
             return (
                 TensorDict(res, batch_size=[1]),
