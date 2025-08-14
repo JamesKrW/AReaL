@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import itertools
 
 import torch
 import torch.distributed as dist
@@ -8,7 +9,7 @@ from torch.utils.data import Subset
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from areal.api.cli_args import GRPOConfig, load_expr_config
-from areal.api.io_struct import FinetuneSpec, StepInfo, WeightUpdateMeta
+from areal.api.io_struct import AllocationMode, FinetuneSpec, StepInfo, WeightUpdateMeta
 from areal.dataset import get_custom_dataset
 from areal.engine.ppo.actor import FSDPPPOActor
 from areal.engine.sglang_remote import RemoteSGLangEngine
@@ -92,7 +93,11 @@ def main(args):
     # but `WeightUpdateMeta.from_fsdp_nccl` has to be executed on all ranks
     # due to `engine.get_param_specs()`.
     # Therefore, we create weight update meta on all ranks, then broadcast the one on rank 0.
-    weight_update_meta = [WeightUpdateMeta.from_disk(config.saver)]
+    weight_update_meta = [
+        WeightUpdateMeta.from_fsdp_nccl(
+            AllocationMode.from_str(config.allocation_mode), actor
+        )
+    ]
     dist.broadcast_object_list(weight_update_meta, src=0)
     weight_update_meta = weight_update_meta[0]
 
@@ -136,7 +141,7 @@ def main(args):
     steps_per_epoch = len(train_dataloader)
     max_steps = total_epochs * steps_per_epoch
 
-    data_generator = iter(train_dataloader)
+    data_generator = itertools.cycle(train_dataloader)
     for global_step in range(start_step, max_steps):
         epoch = global_step // steps_per_epoch
         step = global_step % steps_per_epoch
@@ -172,7 +177,6 @@ def main(args):
         if ref is not None:
             with stats_tracker.record_timing("ref_logp"):
                 batch["ref_logp"] = ref.compute_logp(batch)
-
                 log_gpu_stats("ref logp")
 
         with stats_tracker.record_timing("compute_advantage"):

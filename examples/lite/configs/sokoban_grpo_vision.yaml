@@ -1,6 +1,12 @@
 experiment_name: areal
 trial_name: sokoban-grpo-vision
 allocation_mode: sglang.d4p1t1+d4p1t1
+
+seed: 1
+total_train_epochs: 3
+tokenizer_path: ${actor.path}
+async_training: true
+
 cluster:
   fileroot: /tmp/areal/experiments
   n_nodes: 1
@@ -8,10 +14,7 @@ cluster:
   name_resolve:
     type: nfs
     nfs_record_root: /tmp/areal/name_resolve
-seed: 1
-total_train_epochs: 10
-tokenizer_path: ${actor.path}
-async_training: true
+
 
 rollout:
   experiment_name: ${experiment_name}
