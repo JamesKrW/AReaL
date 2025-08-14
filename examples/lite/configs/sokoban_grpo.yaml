@@ -1,6 +1,6 @@
 experiment_name: areal
 trial_name: sokoban-grpo
-allocation_mode: sglang.d4p1t1+d4p1t1
+allocation_mode: sglang.d1p1t2+d1p1t2
 cluster:
   fileroot: /tmp/areal/experiments
   n_nodes: 1
@@ -35,7 +35,7 @@ actor:
   path: Qwen/Qwen2.5-3B-Instruct
   init_from_scratch: false
   disable_dropout: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
     max_tokens_per_mb: 10240
