@@ -14,7 +14,7 @@ from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
 from areal.api.io_struct import ModelRequest
 from areal.api.workflow_api import RolloutWorkflow
-from areal.utils.data_pad import concat_padded_tensors
+from areal.utils.data import concat_padded_tensors
 from areal.utils.image import image2base64
 from realhf.base import logging
 from areal.dataset.clevr_count_70k import convert_image
@@ -255,7 +255,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 res["pixel_values"] = torch.cat(pv_segs, dim=0).unsqueeze(0)      # (1, sum_tokens_over_new_imgs, D)
             if len(thw_segs) > 0:
                 res["image_grid_thw"] = torch.cat(thw_segs, dim=0).unsqueeze(0)   # (1, sum_new_images, 3)
-
+            print(res["pixel_values"].shape, res["image_grid_thw"].shape)
             total_str = self.tokenizer.decode(input_ids)
             return (
                 TensorDict(res, batch_size=[1]),
