@@ -10,7 +10,7 @@ from transformers import PreTrainedTokenizerFast
 
 from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
-from areal.api.io_struct import LLMRequest
+from areal.api.io_struct import ModelRequest
 from areal.api.workflow_api import RolloutWorkflow
 from areal.utils.data import concat_padded_tensors
 from realhf.base import logging
@@ -89,10 +89,11 @@ class MultiTurnAgentEnvWorkflow(RolloutWorkflow):
             while not done and t < self.max_turns:
                 # Tokenize current conversation and generate assistant reply
 
-                req = LLMRequest(
+                req = ModelRequest(
                     rid=rid,
                     input_ids=input_ids,
                     gconfig=self.gconfig.new(n_samples=1),
+                    tokenizer=self.tokenizer
                 )
                 resp = await engine.agenerate(req)
 

@@ -12,7 +12,7 @@ from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
-from areal.api.io_struct import VLMRequest,LLMRequest
+from areal.api.io_struct import ModelRequest
 from areal.api.workflow_api import RolloutWorkflow
 from areal.utils.data_pad import concat_padded_tensors
 from areal.utils.image import image2base64
@@ -169,20 +169,17 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             # -------------------- Main loop: assistant -> env -> next user (delta) --------------------
             while t < self.max_turns:
                 # ASSISTANT generation: call engine with current incremental prompt_ids and all_images
-                img_b64 = image2base64(all_images) if len(all_images) > 0 else None
-                if img_b64 is not None:
-                    req = VLMRequest(
-                        rid=rid,
-                        input_ids=input_ids,     # incremental; DO NOT re-encode the whole prompt
-                        image_data=img_b64,
-                        gconfig=self.gconfig.new(n_samples=1),
-                    )
-                else:
-                    req = LLMRequest(
-                        rid=rid,
-                        input_ids=input_ids,
-                        gconfig=self.gconfig.new(n_samples=1),
-                    )
+                img_b64 = image2base64(all_images) if len(all_images) > 0 else []
+               
+                req = ModelRequest(
+                    rid=rid,
+                    input_ids=input_ids,     # incremental; DO NOT re-encode the whole prompt
+                    image_data=img_b64,
+                    gconfig=self.gconfig.new(n_samples=1),
+                    tokenizer=self.tokenizer,
+                    processor=self.processor
+                )
+                
 
                 resp = await engine.agenerate(req)
                
