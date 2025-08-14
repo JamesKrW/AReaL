@@ -137,6 +137,11 @@ stats_logger:
   wandb:
     mode: online
     
+launcher:
+  inference_server_cpus_per_gpu: 4
+  inference_server_mem_per_gpu: 32768
+  trainer_cpus_per_gpu: 4
+  trainer_mem_per_gpu: 32768
 
 max_turns: 3
 envs:
