@@ -10,14 +10,13 @@ async_training: true
 cluster:
   n_nodes: 1
   n_gpus_per_node: 8
-  cluster_name: na132
+
   fileroot: /tmp/experiments
   name_resolve:
     type: nfs
     nfs_record_root: /tmp/experiment/name_resolve/clevr_count_70k-grpo
-    etcd3_addr: etcd-client.openpsi-etcd.svc.sigma-na130-lingbo.na130.wl-robby.local:2379
-
-allocation_mode: sglang.d1p1t1+d7p1t1
+    
+allocation_mode: sglang.d1p1t2+d1p1t2
 
 rollout:
   experiment_name: ${experiment_name}
@@ -41,7 +40,7 @@ actor:
   path: Qwen/Qwen2.5-VL-3B-Instruct
   init_from_scratch: false
   disable_dropout: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   dtype: bfloat16 
   #dtype: float16 # for rtx 8000
   mb_spec:
@@ -98,7 +97,7 @@ train_dataset:
   shuffle: true
   pin_memory: true
   num_workers: 4
-  path: /storage/openpsi/data/clevr_count_70k/
+  path: BUAADreamer/clevr_count_70k
   type: rl
 
 valid_dataset:
@@ -106,7 +105,7 @@ valid_dataset:
   shuffle: true
   pin_memory: true
   num_workers: 4
-  path: /storage/openpsi/data/clevr_count_70k/
+  path: BUAADreamer/clevr_count_70k
   type: rl
 
 # Utilities
