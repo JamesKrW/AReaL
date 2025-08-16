@@ -128,6 +128,8 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             # Helper: get visual tensors only for new images of THIS user turn
             def _proc_visual_for_new_imgs(text_with_placeholders: str,
                                         new_images: List[Image.Image]) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+                # text with place holder is "<|vision_start|><|image_pad|><|vision_end|>" for qwen
+                # "<image>" for others
                 if not new_images:
                     return None, None
                 out = self.processor(text=text_with_placeholders, images=new_images,
@@ -241,7 +243,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
 
             # -------------------- Pack results --------------------
             L = len(input_ids)
-            res: Dict[str, torch.Tensor] = {
+            res = {
                 "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0),
                 "attention_mask": torch.ones(1, L, dtype=torch.bool),
                 "loss_mask": torch.tensor(loss_mask, dtype=torch.long).unsqueeze(0),
@@ -249,13 +251,12 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
                 "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
             }
-
+            multi_modal_input={}
             if len(pv_segs) > 0:
-                # per-turn vision is concatenated on dim=0 → add batch on dim=0
-                res["pixel_values"] = torch.cat(pv_segs, dim=0).unsqueeze(0)      # (1, sum_tokens_over_new_imgs, D)
+                multi_modal_input["pixel_values"] = torch.cat(pv_segs, dim=0)
             if len(thw_segs) > 0:
-                res["image_grid_thw"] = torch.cat(thw_segs, dim=0).unsqueeze(0)   # (1, sum_new_images, 3)
-            #print(res["pixel_values"].shape, res["image_grid_thw"].shape)
+                multi_modal_input["image_grid_thw"] = torch.cat(thw_segs, dim=0)
+            res["multi_modal_input"] = [multi_modal_input]
             total_str = self.tokenizer.decode(input_ids)
             return (
                 TensorDict(res, batch_size=[1]),
