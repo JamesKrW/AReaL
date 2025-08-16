@@ -3,4 +3,6 @@ python3 -m areal.launcher.local \
   --config examples/lite/configs/sokoban_grpo_vision.yaml \
   cluster.fileroot=$HOME/tmp/areal/experiments \
   cluster.name_resolve.nfs_record_root=$HOME/tmp/areal/name_resolve \
-  allocation_mode=sglang.d2p1t1+d1p1t2
+  allocation_mode=sglang.d4p1t1+d1p1t4 \
+  train_dataset.batch_size=32 \
+  gconfig.n_samples=16 \

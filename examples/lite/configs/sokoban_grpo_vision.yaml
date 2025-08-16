@@ -38,7 +38,7 @@ actor:
   path: Qwen/Qwen2.5-VL-3B-Instruct
   init_from_scratch: false
   disable_dropout: true
-  gradient_checkpointing: false
+  gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
     max_tokens_per_mb: 10240
@@ -92,7 +92,7 @@ sglang:
 
 # datasets
 train_dataset:
-  batch_size: 2
+  batch_size: 16
   shuffle: true
   pin_memory: true
   num_workers: 4
@@ -100,7 +100,7 @@ train_dataset:
   type: rl
 
 valid_dataset:
-  batch_size: 256
+  batch_size: 128
   shuffle: true
   pin_memory: true
   num_workers: 4
