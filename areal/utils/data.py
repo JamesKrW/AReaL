@@ -16,6 +16,7 @@ from tensordict import TensorDict
 
 from areal.api.cli_args import MicroBatchSpec
 from realhf.base import datapack, logging
+from areal.utils.data_pad_new import concat_padded_tensors
 
 logger = logging.getLogger("data utils")
 
@@ -119,55 +120,55 @@ def pad_input(hidden_states, indices, batch, seqlen):
     return rearrange(output, "(b s) ... -> b s ...", b=batch)
 
 
-def concat_padded_tensors(
-    tensor_dicts: List[TensorDict], pad_value: float = 0.0
-) -> TensorDict:
-    """Concatenate and pad tensors from multiple padded tensor dictionaries."""
-    if not tensor_dicts:
-        return TensorDict()
+# def concat_padded_tensors(
+#     tensor_dicts: List[TensorDict], pad_value: float = 0.0
+# ) -> TensorDict:
+#     """Concatenate and pad tensors from multiple padded tensor dictionaries."""
+#     if not tensor_dicts:
+#         return TensorDict()
 
-    batch_sizes = [tuple(d.batch_size) for d in tensor_dicts]
-    new_batch_size = [sum(x[0] for x in batch_sizes), *batch_sizes[0][1:]]
+#     batch_sizes = [tuple(d.batch_size) for d in tensor_dicts]
+#     new_batch_size = [sum(x[0] for x in batch_sizes), *batch_sizes[0][1:]]
 
-    # Find max sequence length across all dictionaries
-    assert all("attention_mask" in td for td in tensor_dicts)
-    max_length = max([x["attention_mask"].shape[1] for x in tensor_dicts])
-    result = {}
+#     # Find max sequence length across all dictionaries
+#     assert all("attention_mask" in td for td in tensor_dicts)
+#     max_length = max([x["attention_mask"].shape[1] for x in tensor_dicts])
+#     result = {}
 
-    # Process each key
-    for key in tensor_dicts[0].keys():
-        tensors_to_concat = []
+#     # Process each key
+#     for key in tensor_dicts[0].keys():
+#         tensors_to_concat = []
 
-        for tensor_dict in tensor_dicts:
-            tensor = tensor_dict[key]
-            # Skip 1D tensors like rewards
-            if len(tensor.shape) == 1:
-                tensors_to_concat.append(tensor)
-                continue
-            current_length = tensor.shape[1]
-            if key == "pixel_values" or key == "image_grid_thw":
-                tensors_to_concat.append(tensor)
-                continue
-            if current_length < max_length:
-                # Pad tensor to max_length
-                pad_width = max_length - current_length
-                if key == "attention_mask":
-                    # Pad attention mask with 0s
-                    padding = torch.zeros(
-                        (tensor.shape[0], pad_width), dtype=tensor.dtype
-                    )
+#         for tensor_dict in tensor_dicts:
+#             tensor = tensor_dict[key]
+#             # Skip 1D tensors like rewards
+#             if len(tensor.shape) == 1:
+#                 tensors_to_concat.append(tensor)
+#                 continue
+#             current_length = tensor.shape[1]
+#             if key == "pixel_values" or key == "image_grid_thw":
+#                 tensors_to_concat.append(tensor)
+#                 continue
+#             if current_length < max_length:
+#                 # Pad tensor to max_length
+#                 pad_width = max_length - current_length
+#                 if key == "attention_mask":
+#                     # Pad attention mask with 0s
+#                     padding = torch.zeros(
+#                         (tensor.shape[0], pad_width), dtype=tensor.dtype
+#                     )
 
-                else:
-                    # Pad feature tensors with pad_value
-                    padding = torch.full(
-                        (tensor.shape[0], pad_width), pad_value, dtype=tensor.dtype
-                    )
+#                 else:
+#                     # Pad feature tensors with pad_value
+#                     padding = torch.full(
+#                         (tensor.shape[0], pad_width), pad_value, dtype=tensor.dtype
+#                     )
 
-                tensor = torch.cat([tensor, padding], dim=1)
-            tensors_to_concat.append(tensor)
+#                 tensor = torch.cat([tensor, padding], dim=1)
+#             tensors_to_concat.append(tensor)
 
-        result[key] = torch.cat(tensors_to_concat, dim=0)
-    return TensorDict(result, batch_size=new_batch_size)
+#         result[key] = torch.cat(tensors_to_concat, dim=0)
+#     return TensorDict(result, batch_size=new_batch_size)
 
 
 def to_device(data: Dict[str, torch.Tensor | Any], device) -> Dict[str, torch.Tensor]:
@@ -331,7 +332,7 @@ def split_padded_tensor_dict_into_mb_list(
     to_split = {}
     not_to_split = {}
     for key, value in data.items():
-        if key == "image_grid_thw" or key == "pixel_values":
+        if key == "image_grid_thw" or key == "pixel_values" or key=="multi_modal_input":
             continue
         if key == "position_ids" or (
             torch.is_tensor(value) and value.numel() == bs * max_seqlen
@@ -388,8 +389,20 @@ def split_padded_tensor_dict_into_mb_list(
         # Pack the split pixel_values and image_grid_thw back into the data
         to_split["pixel_values"] = pixel_values_split
         to_split["image_grid_thw"] = image_grid_thw_split
-    mbs = dict_of_list2list_of_dict(to_split)
+        
+    if "multi_modal_input" in data:
+        multi_modal_input = data["multi_modal_input"]
 
+        # Prepare the pixel_values and image_grid_thw for each group
+        multi_modal_input_split=[]
+
+        for group_index in group_indices:
+            group_pixel_multi_modal_input = [multi_modal_input[i] for i in group_index]
+            # Stack pixel_values for each group (assuming pixel_values is a list of tensors)
+            multi_modal_input_split.append(group_pixel_multi_modal_input)
+        # Pack the split pixel_values and image_grid_thw back into the data
+        to_split["multi_modal_input"] = multi_modal_input_split
+    mbs = dict_of_list2list_of_dict(to_split)
     results = []
     # organize splitted micro batches
     assert len(mbs) == len(splitted_lens), (len(mbs), len(splitted_lens))
