@@ -206,7 +206,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 # Step environment
                 next_obs, r, done, _ = env.step(assistant_text)
                 cumulative_reward += float(r)
-                if done:
+                if done or t+1>=self.max_turns:
                     break
 
                 # NEXT USER turn: build delta (add only new text part)
@@ -224,6 +224,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 curr_ids = _proc_ids(curr_prompt_text, all_images + new_imgs)
 
                 # Delta is the suffix beyond the previously materialized prompt length
+                
                 delta_ids = curr_ids[prev_len:]
                 input_ids += delta_ids
                 logprobs += [0.0] * len(delta_ids)  # user segment: no logprobs
