@@ -6,6 +6,6 @@ python3 -m areal.launcher.local \
   allocation_mode=sglang.d4p1t1+d1p1t4 \
   train_dataset.batch_size=32 \
   gconfig.n_samples=16 \
-  actor_train.mb_spec.max_tokens_per_mb=32768 \
-  actor_inf.mb_spec.max_tokens_per_mb=32768 \
+  actor.mb_spec.max_tokens_per_mb=32768 \
+  actor.mb_spec.max_tokens_per_mb=32768 \
   ref.mb_spec.max_tokens_per_mb=32768 \
