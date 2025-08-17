@@ -2,30 +2,38 @@
 import asyncio
 import os
 import uuid
-from typing import Dict, List, Any, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import colorama
 import torch
+from PIL import Image
 from tensordict import TensorDict
 from transformers import AutoProcessor, PreTrainedTokenizerFast
-from PIL import Image
-from typing import Any, Dict, List, Optional, Tuple
+
 from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
 from areal.api.io_struct import ModelRequest
 from areal.api.workflow_api import RolloutWorkflow
+from areal.dataset.clevr_count_70k import convert_image
+from areal.envs.utils.env_load_utils import (
+    load_env_from_registry,  # Unified env loading
+)
 from areal.utils.data import concat_padded_tensors
 from areal.utils.image import image2base64
 from realhf.base import logging
-from areal.dataset.clevr_count_70k import convert_image
-from areal.envs.utils.env_load_utils import load_env_from_registry  # Unified env loading
 
 logger = logging.getLogger("Vision Multi-Turn AgentEnv workflow")
 
+
 def _count_img_segments(text: str, processor: AutoProcessor) -> int:
     import re
+
     iproc = getattr(processor, "image_processor", None)
-    if iproc and hasattr(iproc, "image_processor_type") and "qwen" in str(iproc.image_processor_type).lower():
+    if (
+        iproc
+        and hasattr(iproc, "image_processor_type")
+        and "qwen" in str(iproc.image_processor_type).lower()
+    ):
         return len(re.findall(r"<\|vision_start\|>", text))
     image_tok = getattr(processor, "image_token", "<image>")
     return text.count(image_tok)
@@ -36,13 +44,20 @@ def processor_output(
     text_with_placeholders: str,
     new_images: List[Image.Image],
 ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
-    
+
     if not new_images:
         return None, None
     k = _count_img_segments(text_with_placeholders, processor)
     if k != len(new_images):
-        raise ValueError(f"mismatch between place holders: {k} and images: {len(new_images)}")
-    out = processor(text=text_with_placeholders, images=new_images, padding=False, return_tensors="pt")
+        raise ValueError(
+            f"mismatch between place holders: {k} and images: {len(new_images)}"
+        )
+    out = processor(
+        text=text_with_placeholders,
+        images=new_images,
+        padding=False,
+        return_tensors="pt",
+    )
     return out
 
 
@@ -59,13 +74,14 @@ def extract_images_from_multimodal_data(
         images.append(img if isinstance(img, Image.Image) else convert_image(img))
     return images
 
+
 def get_text_with_image_token(text_content: str, image_placeholder, processor) -> str:
     if "qwen" in processor.image_processor.image_processor_type.lower():
         image_token = "<|vision_start|><|image_pad|><|vision_end|>"
     else:
         image_token = processor.image_token if processor is not None else "<image>"
     return text_content.replace(image_placeholder, image_token)
-    
+
 
 class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     """
@@ -96,8 +112,9 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         if self.dump_dir is not None and not os.path.exists(self.dump_dir):
             os.makedirs(self.dump_dir, exist_ok=True)
 
-
-    async def _run_one_episode(self, engine: InferenceEngine, data: dict, rid: str) -> TensorDict:
+    async def _run_one_episode(
+        self, engine: InferenceEngine, data: dict, rid: str
+    ) -> TensorDict:
         # ensure env can close
         env, seed = load_env_from_registry(data)
         try:
@@ -108,10 +125,12 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             all_images: List[Image.Image] = []
 
             # Rollout accumulators (we will append deltas only)
-            input_ids: List[int] = []     # running prompt ids (what we send to the engine)
-            logprobs:  List[float] = []   # per-token logprobs (assistant tokens; user tokens are zeros)
-            loss_mask: List[int] = []     # 1 for assistant tokens to train; 0 otherwise
-            versions:  List[int] = []     # fill with -1
+            input_ids: List[int] = []  # running prompt ids (what we send to the engine)
+            logprobs: List[float] = (
+                []
+            )  # per-token logprobs (assistant tokens; user tokens are zeros)
+            loss_mask: List[int] = []  # 1 for assistant tokens to train; 0 otherwise
+            versions: List[int] = []  # fill with -1
             cumulative_reward = 0.0
             t = 0
 
@@ -121,41 +140,62 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
 
             # Helper: processor encode to ids with optional images
             def _proc_ids(text: str, images: List[Image.Image]) -> List[int]:
-                out = self.processor(text=text, images=images if images else None,
-                                    padding=False, return_tensors="pt")
+                out = self.processor(
+                    text=text,
+                    images=images if images else None,
+                    padding=False,
+                    return_tensors="pt",
+                )
                 return out["input_ids"][0].tolist()
 
             # Helper: get visual tensors only for new images of THIS user turn
-            def _proc_visual_for_new_imgs(text_with_placeholders: str,
-                                        new_images: List[Image.Image]) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
+            def _proc_visual_for_new_imgs(
+                text_with_placeholders: str, new_images: List[Image.Image]
+            ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
                 # text with place holder is "<|vision_start|><|image_pad|><|vision_end|>" for qwen
                 # "<image>" for others
                 if not new_images:
                     return None, None
-                out = self.processor(text=text_with_placeholders, images=new_images,
-                                    padding=False, return_tensors="pt")
-                pv  = out.get("pixel_values", None)
+                out = self.processor(
+                    text=text_with_placeholders,
+                    images=new_images,
+                    padding=False,
+                    return_tensors="pt",
+                )
+                pv = out.get("pixel_values", None)
                 thw = out.get("image_grid_thw", None)
                 return pv, thw
 
             # -------------------- Initialize messages and initial user delta --------------------
             messages = [
-                {"role": "system", "content": get_text_with_image_token(sys_prompt, self.image_placeholder, self.processor)},
-                {"role":"user","content":get_text_with_image_token(init_obs["obs_str"], self.image_placeholder, self.processor)}
+                {
+                    "role": "system",
+                    "content": get_text_with_image_token(
+                        sys_prompt, self.image_placeholder, self.processor
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": get_text_with_image_token(
+                        init_obs["obs_str"], self.image_placeholder, self.processor
+                    ),
+                },
             ]
 
-            
-            init_new_imgs  = extract_images_from_multimodal_data(init_obs.get("multi_modal_data", {}), self.image_placeholder)
+            init_new_imgs = extract_images_from_multimodal_data(
+                init_obs.get("multi_modal_data", {}), self.image_placeholder
+            )
 
-            
-            curr_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            curr_prompt_text = self.processor.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
             curr_ids = _proc_ids(curr_prompt_text, all_images + init_new_imgs)
 
             # Delta for the initial USER segment
-            
+
             input_ids.extend(curr_ids)
-            logprobs.extend([0.0] * len(curr_ids))   # user segment: no logprobs
-            loss_mask.extend([0] * len(curr_ids))    # user segment: not trained
+            logprobs.extend([0.0] * len(curr_ids))  # user segment: no logprobs
+            loss_mask.extend([0] * len(curr_ids))  # user segment: not trained
             versions.extend([-1] * len(curr_ids))
 
             # Record visual tensors only for the newly added images of this turn
@@ -172,63 +212,75 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             while t < self.max_turns:
                 # ASSISTANT generation: call engine with current incremental prompt_ids and all_images
                 img_b64 = image2base64(all_images) if len(all_images) > 0 else []
-               
+
                 req = ModelRequest(
                     rid=rid,
-                    input_ids=input_ids,     # incremental; DO NOT re-encode the whole prompt
+                    input_ids=input_ids,  # incremental; DO NOT re-encode the whole prompt
                     image_data=img_b64,
                     gconfig=self.gconfig.new(n_samples=1),
                     tokenizer=self.tokenizer,
-                    processor=self.processor
+                    processor=self.processor,
                 )
-                
 
                 resp = await engine.agenerate(req)
-               
-                
+
                 # Append assistant outputs
-                input_ids+=resp.output_tokens
-                logprobs+=resp.output_logprobs
-                loss_mask+=[1] * len(resp.output_tokens) 
-                versions+=resp.output_versions
-                
+                input_ids += resp.output_tokens
+                logprobs += resp.output_logprobs
+                loss_mask += [1] * len(resp.output_tokens)
+                versions += resp.output_versions
+
                 eos_id = self.tokenizer.eos_token_id
-                if eos_id is not None and (len(resp.output_tokens) == 0 or input_ids[-1] != eos_id):
+                if eos_id is not None and (
+                    len(resp.output_tokens) == 0 or input_ids[-1] != eos_id
+                ):
                     input_ids.append(eos_id)
                     logprobs.append(0.0)
                     loss_mask.append(0)
                     versions.append(-1)
 
                 # Decode assistant text for env step
-                assistant_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True)
+                assistant_text = self.tokenizer.decode(
+                    resp.output_tokens, skip_special_tokens=True
+                )
                 messages.append({"role": "assistant", "content": assistant_text})
 
                 # Step environment
                 next_obs, r, done, _ = env.step(assistant_text)
                 cumulative_reward += float(r)
-                if done or t+1>=self.max_turns:
+                if done or t + 1 >= self.max_turns:
                     break
 
                 # NEXT USER turn: build delta (add only new text part)
-                next_user_text = get_text_with_image_token(next_obs["obs_str"], self.image_placeholder, self.processor)
-                new_imgs = extract_images_from_multimodal_data(next_obs.get("multi_modal_data", {}), self.image_placeholder)
+                next_user_text = get_text_with_image_token(
+                    next_obs["obs_str"], self.image_placeholder, self.processor
+                )
+                new_imgs = extract_images_from_multimodal_data(
+                    next_obs.get("multi_modal_data", {}), self.image_placeholder
+                )
 
                 # prev prompt before adding the new user (gen prompt ON)
-                prev_len = len(input_ids)  # the length of the prompt we actually sent/hold
-                prev_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                prev_len = len(
+                    input_ids
+                )  # the length of the prompt we actually sent/hold
+                prev_prompt_text = self.processor.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
                 # (Optional sanity) The ids below should match input_ids; we avoid recomputation to keep it incremental.
 
                 # Append the new user to messages and compute current prompt ids (locally) to take delta
                 messages.append({"role": "user", "content": next_user_text})
-                curr_prompt_text = self.processor.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                curr_prompt_text = self.processor.tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True
+                )
                 curr_ids = _proc_ids(curr_prompt_text, all_images + new_imgs)
 
                 # Delta is the suffix beyond the previously materialized prompt length
-                
+
                 delta_ids = curr_ids[prev_len:]
                 input_ids += delta_ids
                 logprobs += [0.0] * len(delta_ids)  # user segment: no logprobs
-                loss_mask += [0] * len(delta_ids)   # user segment: not trained
+                loss_mask += [0] * len(delta_ids)  # user segment: not trained
                 versions += [-1] * len(delta_ids)
 
                 # Visual tensors only for newly added images of this user turn
@@ -252,12 +304,23 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
                 "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
             }
-            multi_modal_input={}
+            multi_modal_input = {}
             if len(pv_segs) > 0:
                 multi_modal_input["pixel_values"] = torch.cat(pv_segs, dim=0)
             if len(thw_segs) > 0:
                 multi_modal_input["image_grid_thw"] = torch.cat(thw_segs, dim=0)
-            res["multi_modal_input"] = [multi_modal_input]
+            if multi_modal_input:
+                num_image_pad_tokens = (
+                    (res["input_ids"] == self.processor.image_token_id).sum().item()
+                )
+                num_pixel_features = multi_modal_input["pixel_values"].shape[0] // (
+                    self.processor.image_processor.merge_size**2
+                )
+                assert num_image_pad_tokens == num_pixel_features, (
+                    f"Mismatch: input_ids has {num_image_pad_tokens} <|image_pad|> tokens, "
+                    f"but pixel_values has {num_pixel_features} features"
+                )
+                res["multi_modal_input"] = [multi_modal_input]
             total_str = self.tokenizer.decode(input_ids)
             return (
                 TensorDict(res, batch_size=[1]),
@@ -271,10 +334,6 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 env.close()
             except Exception:
                 pass
-
-
-
-       
 
     async def arun_episode(self, engine: InferenceEngine, data: dict):
         """
@@ -297,7 +356,9 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 if qid is not None:
                     break
             qid = qid or uuid.uuid4().hex
-            with open(os.path.join(self.dump_dir, str(version), f"{qid}.txt"), "a") as f:
+            with open(
+                os.path.join(self.dump_dir, str(version), f"{qid}.txt"), "a"
+            ) as f:
                 n_samples = self.gconfig.n_samples
                 for i, (_, total_str, cumulative_reward, len_seq) in enumerate(results):
                     info = "\n".join(
