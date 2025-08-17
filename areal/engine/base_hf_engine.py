@@ -253,6 +253,7 @@ class BaseHFEngine(TrainEngine):
 
     def prepare_mb_list(self, input_: TensorDict) -> MicroBatchList:
         assert "attention_mask" in input_ and "input_ids" in input_
+
         if isinstance(input_, dict):
             input_ = TensorDict(input_, batch_size=[input_["input_ids"].shape[0]])
         if is_qwen2_vl_model(self.model_config.model_type):
@@ -483,14 +484,7 @@ class BaseHFEngine(TrainEngine):
         for pad_length, padded_mb_input, mb_input in zip(
             mb_list.padding_lengths, mb_list.padded_mbs, mb_list.mbs
         ):
-            # for k,v in padded_mb_input.items():
-            #     print(k)
-            #     if isinstance(v, torch.Tensor):
-            #         print(v.shape)
-            #     else:
-            #         print(type(v),v)
-            # import sys
-            # sys.exit()
+
             outputs = self.model(**padded_mb_input)
             logits = outputs.logits.squeeze(0)
             logits = logits[:-pad_length] if pad_length > 0 else logits
