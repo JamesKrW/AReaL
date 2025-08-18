@@ -90,9 +90,6 @@ class SokobanEnv:
             },
         }
 
-        if parsed["format_correct"]:
-            reward += 0.5
-
         # Execute each action in the list
         for action in action_list:
             if action in self.ACTION_LOOKUP:
@@ -109,6 +106,8 @@ class SokobanEnv:
             else:
                 metrics["turn_metrics"]["action_is_valid"] = False
                 break
+        if self.valid_actions:
+            reward += 0.0
 
         # Check if action was effective (player moved)
         metrics["turn_metrics"]["action_is_effective"] = not np.array_equal(
