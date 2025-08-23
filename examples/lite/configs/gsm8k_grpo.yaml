@@ -38,7 +38,7 @@ actor:
   gradient_checkpointing: false
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 10240
+    max_tokens_per_gpu: 10240
   optimizer:
     type: adam
     lr: 1.70e-5
@@ -71,7 +71,7 @@ ref:
   disable_dropout: true
   dtype: ${actor.dtype}
   mb_spec:
-    max_tokens_per_mb: 10240
+    max_tokens_per_gpu: 10240
   optimizer: null
   backend: fsdp
 
@@ -93,6 +93,7 @@ train_dataset:
   num_workers: 4
   path: openai/gsm8k
   type: rl
+  max_length: 1024
 
 valid_dataset:
   batch_size: 256
