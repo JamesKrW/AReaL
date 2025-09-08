@@ -37,6 +37,7 @@ from areal.utils.model import (
     VALID_VISION_MODELS,
     disable_dropout_in_model,
     is_qwen2_vl_model,
+    is_qwen3_moe_model,
 )
 from areal.utils.nccl import NCCL_DEFAULT_TIMEOUT
 
@@ -60,6 +61,7 @@ class BaseHFEngine(TrainEngine):
         self.initialized = False
         self.own_global_group = False
         self._parallelism_group: dist.ProcessGroup
+        self.mp_group: dist.ProcessGroup
         self.weight_update_group_initialized = False
 
         self.model_config = AutoConfig.from_pretrained(
@@ -82,6 +84,30 @@ class BaseHFEngine(TrainEngine):
         return self
 
     @property
+    def data_parallel_group(self) -> dist.ProcessGroup:
+        assert self.initialized
+        return self._parallelism_group
+
+    @property
+    def data_parallel_rank(self) -> int:
+        return dist.get_rank()
+
+    @property
+    def data_parallel_world_size(self) -> int:
+        return self.world_size
+
+    def current_data_parallel_head(self) -> int:
+        return dist.get_rank()
+
+    def is_data_parallel_head(self) -> bool:
+        return True
+
+    @property
+    def context_and_model_parallel_group(self) -> dist.ProcessGroup:
+        assert self.initialized
+        return self.mp_group
+
+    @property
     def parallelism_group(self) -> dist.ProcessGroup:
         assert self.initialized
         return self._parallelism_group
@@ -100,6 +126,8 @@ class BaseHFEngine(TrainEngine):
             )
             self.own_global_group = True
         self._parallelism_group = dist.new_group()
+        # Each process is its own model parallel group.
+        self.mp_group = dist.new_group([dist.get_rank()])
 
     def create_device_model(self):
         torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
@@ -221,6 +249,7 @@ class BaseHFEngine(TrainEngine):
         gc.collect()
         torch.cuda.empty_cache()
         gc.collect()
+        dist.destroy_process_group(self.context_and_model_parallel_group)
         dist.destroy_process_group(self.parallelism_group)
         if self.own_global_group:
             dist.destroy_process_group()
@@ -319,16 +348,24 @@ class BaseHFEngine(TrainEngine):
         for i, mb in enumerate(mb_list.padded_mbs):
             mb_list.padded_mbs[i] = dict(**mb)
         for mb, padded_mb in zip(mb_list.mbs, mb_list.padded_mbs):
-            mb["max_seqlen"] = int(mb["max_seqlen"])
-            padded_mb["max_seqlen"] = int(padded_mb["max_seqlen"])
-            mb["cu_seqlens_q"] = mb["cu_seqlens_k"] = mb["cu_seqlens"]
-            padded_mb["cu_seqlens_q"] = padded_mb["cu_seqlens_k"] = padded_mb[
+            mb["max_length_q"] = mb["max_length_k"] = mb["max_seqlen"] = int(
+                mb["max_seqlen"]
+            )
+            padded_mb["max_length_q"] = padded_mb["max_length_k"] = padded_mb[
+                "max_seqlen"
+            ] = int(padded_mb["max_seqlen"])
+            mb["cu_seq_lens_q"] = mb["cu_seq_lens_k"] = mb["cu_seqlens"]
+            padded_mb["cu_seq_lens_q"] = padded_mb["cu_seq_lens_k"] = padded_mb[
                 "cu_seqlens"
             ]
             mb["use_cache"] = False
             padded_mb["use_cache"] = False
-            mb["attention_mask"] = dict(full_attention=None)
-            padded_mb["attention_mask"] = dict(full_attention=None)
+            if is_qwen3_moe_model(self.model_config.model_type):
+                mb["attention_mask"] = None
+                padded_mb["attention_mask"] = None
+            else:
+                mb["attention_mask"] = dict(full_attention=None)
+                padded_mb["attention_mask"] = dict(full_attention=None)
             if "multi_modal_input" in mb:
                 image_grid_thw_list = [
                     item["image_grid_thw"]
@@ -508,6 +545,3 @@ class BaseHFEngine(TrainEngine):
         unpacked = unpack_sequence(res, lens=output_seqlens, dim=0)
         reordered = reorder_list(unpacked, mb_list.backward_indices)
         return pad_and_stack_tensors_along_first_dim(reordered)
-
-    def is_data_parallel_head(self):
-        return True

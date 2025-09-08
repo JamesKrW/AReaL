@@ -7,6 +7,7 @@ import torch
 from tensordict import TensorDict
 from transformers import AutoTokenizer
 
+from areal.api.alloc_mode import AllocationMode
 from areal.api.io_struct import FinetuneSpec, SaveLoadMeta
 from areal.experimental.api.cli_args import (
     ExperimentalTrainEngineConfig as TrainEngineConfig,
@@ -15,7 +16,6 @@ from areal.experimental.api.cli_args import (
     MegatronEngineConfig,
     OptimizerConfig,
 )
-from areal.experimental.api.io_struct import AllocationMode
 from areal.experimental.megatron_engine import MegatronEngine
 from areal.utils import logging
 from areal.utils.device import log_gpu_stats
@@ -24,6 +24,8 @@ logger = logging.getLogger("MegatronEngine Test")
 
 VOCAB_SIZE = 100
 MODEL_PATH = "/storage/testing/models/Qwen__Qwen3-1.7B/"
+if not os.path.exists(MODEL_PATH):
+    MODEL_PATH = "Qwen/Qwen3-1.7B"
 
 
 @pytest.fixture(scope="module")
@@ -84,6 +86,7 @@ def engine():
     alloc_mode = AllocationMode.from_str("d1p1t1")
     ft_spec = FinetuneSpec(total_train_epochs=1, dataset_size=128, train_batch_size=8)
     engine = MegatronEngine(config)
+    engine.create_process_group(alloc_mode.train)
     engine.initialize(addr=None, ft_spec=ft_spec, parallel_strategy=alloc_mode.train)
     logger.info(f"mcore GPTModel initialized: {engine.model}")
     log_gpu_stats("initialize")
@@ -99,7 +102,7 @@ def test_simple_forward(engine, mock_input):
 def test_simple_train(engine, mock_input):
     engine.train()
     train_result = engine.train_batch(
-        mock_input, loss_fn=mock_loss_fn, loss_weight_fn=None
+        mock_input, loss_fn=mock_loss_fn, loss_weight_fn=lambda x: 1
     )
     engine.step_lr_scheduler()
     logger.info(f"Train done, result={train_result}")

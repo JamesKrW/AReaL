@@ -36,15 +36,17 @@ def mock_padded_data():
     return pad_sequences_to_tensors(all_data)
 
 
-@pytest.mark.parametrize("max_tokens_per_gpu", [24, 36, 48, 100])
+@pytest.mark.parametrize("max_tokens_per_mb", [24, 36, 48, 100])
 @pytest.mark.parametrize("n_mbs", [1, 2, 4, 8])
-def test_micro_batch_split(mock_padded_data, n_mbs, max_tokens_per_gpu):
-    mb_spec = MicroBatchSpec(n_mbs, max_tokens_per_gpu)
+def test_micro_batch_split(mock_padded_data, n_mbs, max_tokens_per_mb):
+    mb_spec = MicroBatchSpec(n_mbs, max_tokens_per_mb)
 
     # Unpad and split to microbatches
     packed_data = pack_tensor_dict(mock_padded_data)
     original_lens = packed_data["cu_seqlens"][1:] - packed_data["cu_seqlens"][:-1]
-    assert torch.allclose(original_lens, mock_padded_data["attention_mask"].sum(1))
+    assert torch.allclose(
+        original_lens.long(), mock_padded_data["attention_mask"].sum(1)
+    )
     split_result = split_padded_tensor_dict_into_mb_list(mock_padded_data, mb_spec)
     split_result.mbs = [pack_tensor_dict(mb) for mb in split_result.mbs]
     reordered_lens = [original_lens[i] for i in split_result.forward_indices]
@@ -59,7 +61,7 @@ def test_micro_batch_split(mock_padded_data, n_mbs, max_tokens_per_gpu):
 
         # assert microbatch split result does not violate requirements
         for mb in split_result.mbs:
-            assert mb[key].shape[0] <= max_tokens_per_gpu
+            assert mb[key].shape[0] <= max_tokens_per_mb
 
         x = torch.cat([mb[key] for mb in split_result.mbs])
         xs = unpack_sequence(x, lens=reordered_lens)
