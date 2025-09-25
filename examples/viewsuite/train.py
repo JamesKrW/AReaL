@@ -45,10 +45,18 @@ def main(args):
     seeding.set_random_seed(config.seed, key=f"trainer{rank}")
 
     train_dataset = build_env_dataset(
-        config.envs, split="train", base_seed=config.seed, rank=rank, world_size=world_size
+        config.envs,
+        split="train",
+        base_seed=config.seed,
+        rank=rank,
+        world_size=world_size,
     )
     valid_dataset = build_env_dataset(
-        config.envs, split="valid", base_seed=config.seed, rank=rank, world_size=world_size
+        config.envs,
+        split="valid",
+        base_seed=config.seed,
+        rank=rank,
+        world_size=world_size,
     )
     # Create dataset and dataloaders
     train_dataloader = StatefulDataLoader(

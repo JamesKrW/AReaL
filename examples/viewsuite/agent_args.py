@@ -1,15 +1,22 @@
 from areal.api.cli_args import GRPOConfig
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 @dataclass
 class EnvSpec:
     """One logical environment family to expand into N data points."""
-    name: str                    # key in REGISTERED_ENVS, e.g., "GymProxyNoTool"
-    n_envs: int                  # e.g., 10000
-    split: str                   # "train" | "valid"
-    seed: int = 0                # per-env base seed
-    config: Dict[str, Any] = field(default_factory=dict)  # env-specific cfg
+    # Key in REGISTERED_ENVS, e.g., "GymProxyNoTool"
+    name: str
+    # How many concrete instances to materialize from this spec
+    n_envs: int
+    # Which dataset split this spec belongs to ("train" | "valid" | ...)
+    split: str
+    # Environment-specific configuration passed through untouched
+    config: Dict[str, Any] = field(default_factory=dict)
+    # Seed directive: [base] | [min, max] | [min, max, limit]
+    seed: List[int] = field(default_factory=lambda: [0])
+    # Optional explicit per-instance seeds; must be longer than n_envs
+    seed_list: Optional[List[int]] = None
 
 
 @dataclass
