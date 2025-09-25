@@ -92,7 +92,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     ) -> Tuple[TensorDict, str, float, int]:
         seed = data["seed"]
         # Instantiate async env
-        env: GymImageEnv = REGISTERED_ENVS[data["env_name"]](data["env_config"])
+        env: GymImageEnv = REGISTERED_ENVS[data["name"]](data["config"])
         try:
             # ===== Init =====
             init_obs, _ = await env.reset(seed=seed)
