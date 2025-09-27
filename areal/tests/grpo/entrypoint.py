@@ -42,6 +42,7 @@ def main() -> None:
     seeding.set_random_seed(config.seed, str(rank))
     allocation_mode = AllocationMode.from_str(config.allocation_mode)
     parallel_strategy = allocation_mode.train
+    assert parallel_strategy is not None
 
     actor = FSDPPPOActor(config=config.actor)
     actor.create_process_group(parallel_strategy=parallel_strategy)
@@ -81,7 +82,7 @@ def main() -> None:
     ref.initialize(None, ft_spec)
 
     weight_update_meta = [
-        WeightUpdateMeta.from_fsdp_nccl(
+        WeightUpdateMeta.from_fsdp_xccl(
             AllocationMode.from_str(config.allocation_mode), actor
         )
     ]
