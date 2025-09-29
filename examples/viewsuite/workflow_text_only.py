@@ -1,8 +1,8 @@
-# vision_multi_turn_agent_env_workflow.py (async GymImageEnv version)
+# vision_multi_turn_agent_env_workflow.py (async GymImageEnv version; VLM+LLM compatible)
 import asyncio
 import os
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import colorama
 import torch
@@ -24,59 +24,112 @@ from registry import REGISTERED_ENVS
 logger = logging.getLogger("Vision Multi-Turn AgentEnv workflow")
 
 
+# ---------------------- Helpers ----------------------
+
+def _is_vlm_processor(proc: Optional[AutoProcessor]) -> bool:
+    """Heuristically determine if `proc` can handle images."""
+    if proc is None:
+        return False
+    # Most vision processors expose `image_processor` or `image_processor_type`
+    return hasattr(proc, "image_processor")
+
+def _apply_chat_template_safe(
+    tokenizer: PreTrainedTokenizerFast,
+    conversation: List[Dict[str, str]],
+    tokenize: bool,
+    add_generation_prompt: bool,
+) -> Any:
+    """
+    Use tokenizer.apply_chat_template if available; otherwise fall back to a simple format.
+    Returns text (if tokenize=False) or token IDs tensor/list (if tokenize=True).
+    """
+    if hasattr(tokenizer, "apply_chat_template"):
+        return tokenizer.apply_chat_template(
+            conversation=conversation,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+        )
+    # Fallback formatting (very simple)
+    # Format: "<s>[SYSTEM]\n...\n[USER]\n...\n[ASSISTANT]\n"
+    parts = []
+    for msg in conversation:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        if role == "system":
+            parts.append(f"[SYSTEM]\n{content}\n")
+        elif role == "assistant":
+            parts.append(f"[ASSISTANT]\n{content}\n")
+        else:
+            parts.append(f"[USER]\n{content}\n")
+    if add_generation_prompt:
+        parts.append("[ASSISTANT]\n")
+    text = "".join(parts)
+    if not tokenize:
+        return text
+    return tokenizer(text, return_tensors="pt")["input_ids"][0]  # token IDs
+
 def convert_placeholder_to_image_token(
-    text_content: str, image_placeholder: str, processor: AutoProcessor | None
+    text_content: str,
+    image_placeholder: str,
+    processor: Optional[AutoProcessor],
+    for_vlm: bool,
 ) -> str:
     """
-    Replace image placeholder with model-specific image token.
-    - Qwen-style: <|vision_start|><|image_pad|><|vision_end|>
-    - Generic: processor.image_token if available else "<image>"
+    Replace <image> placeholder based on whether we're running a VLM turn.
+    - If VLM (images present & processor is vision-capable):
+        - Qwen-style: <|vision_start|><|image_pad|><|vision_end|>
+        - Else: processor.image_token if available else "<image>"
+    - If LLM/text-only turn: strip or normalize placeholder to something harmless.
     """
-    if processor is not None and hasattr(processor, "image_processor"):
-        iproc = processor.image_processor
-        if getattr(iproc, "image_processor_type", "").lower().find("qwen") >= 0:
+    if for_vlm and _is_vlm_processor(processor):
+        iproc = getattr(processor, "image_processor", None)
+        if iproc and getattr(iproc, "image_processor_type", "").lower().find("qwen") >= 0:
             image_token = "<|vision_start|><|image_pad|><|vision_end|>"
         else:
             image_token = getattr(processor, "image_token", "<image>")
     else:
-        image_token = "<image>"
+        # Text-only path: avoid leaving model-specific tokens; use a neutral marker or nothing.
+        image_token = "[image]"  # or "" to fully remove
     return text_content.replace(image_placeholder, image_token)
 
-
 def get_images_from_multi_modal_input(
-    multi_modal_input: Dict[str, Any] | None,
+    multi_modal_input: Optional[Dict[str, Any]],
     image_placeholder: str = "<image>",
 ) -> List[Image.Image]:
     """
     Extract a list of PIL images from obs['multi_modal_input'][image_placeholder].
+    Accepts PIL.Image or array-like tensors convertible via convert_image.
     """
-    # if not multi_modal_input:
-    #     return []
-    # image_list = multi_modal_input.get(image_placeholder, [])
-    # images: List[Image.Image] = []
-    # for img in image_list:
-    #     images.append(img if isinstance(img, Image.Image) else convert_image(img))
-    # return images
-    return []
+    if not multi_modal_input:
+        return []
+    image_list = multi_modal_input.get(image_placeholder, [])
+    images: List[Image.Image] = []
+    for img in image_list:
+        if isinstance(img, Image.Image):
+            images.append(img)
+        else:
+            images.append(convert_image(img))
+    return images
 
 
 class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     """
-    Multi-turn workflow driven by an async GymImageEnv with vision support.
+    Multi-turn workflow that supports BOTH VLM (vision) and LLM (text-only).
 
-    - env.system_prompt(), env.reset(), env.step(), env.close() are async.
-    - Observations may include images in:
-        obs["multi_modal_input"][image_placeholder] = [PIL.Image.Image, ...]
-    - Text segments embed placeholder tokens that we convert to model-specific image tokens.
+    Key behavior:
+    - Per turn, we check if NEW images exist. If yes and `processor` is vision-capable,
+      we take the VLM path (use `processor`); otherwise we take the LLM path (use `tokenizer` only).
+    - Avoids calling `processor.tokenizer` (which fails when `processor` is a tokenizer itself).
+    - Keeps pixel_values/image_grid_thw packing only for VLM turns.
     """
 
     def __init__(
         self,
         gconfig: GenerationHyperparameters,
         tokenizer: PreTrainedTokenizerFast,
-        processor: AutoProcessor,
+        processor: Optional[AutoProcessor] = None,
         image_placeholder: str = "<image>",
-        dump_dir: str | None = None,
+        dump_dir: Optional[str] = None,
     ):
         self.gconfig = gconfig
         self.tokenizer = tokenizer
@@ -91,8 +144,8 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     ) -> Tuple[TensorDict, str, float, int]:
         seed = data["seed"]
         max_turns = data.get("max_turns", 1)
-        # Instantiate async env
         env: GymImageEnv = REGISTERED_ENVS[data["name"]](data["config"])
+
         try:
             # ===== Init =====
             init_obs, _ = await env.reset(seed=seed)
@@ -113,62 +166,82 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             thw_segs: List[torch.Tensor] = []
 
             # ----- Seed conversation with system + initial user -----
+            # Detect images for the initial user turn
+            new_images = get_images_from_multi_modal_input(
+                init_obs.get("multi_modal_input"), self.image_placeholder
+            )
+            for_vlm_turn = len(new_images) > 0 and _is_vlm_processor(self.processor)
+
             new_messages = [
                 {
                     "role": "system",
                     "content": convert_placeholder_to_image_token(
-                        sys_prompt, self.image_placeholder, self.processor
+                        sys_prompt["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
                     ),
                 },
                 {
                     "role": "user",
                     "content": convert_placeholder_to_image_token(
-                        init_obs["obs_str"], self.image_placeholder, self.processor
+                        init_obs["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
                     ),
                 },
             ]
 
-            new_images = get_images_from_multi_modal_input(
-                init_obs.get("multi_modal_input"), self.image_placeholder
-            )
+            # Build prompt encoding for the seed messages
+            if for_vlm_turn:
+                # VLM path: use processor (vision-enabled) with images
+                text_for_proc = _apply_chat_template_safe(
+                    self.tokenizer, new_messages, tokenize=False, add_generation_prompt=True
+                )
+                processed_input = self.processor(
+                    images=new_images if new_images else None,
+                    text=text_for_proc,
+                    padding=False,
+                    return_tensors="pt",
+                )
+                cur_input_ids = processed_input["input_ids"].tolist()[0]
+                input_ids.extend(cur_input_ids)
+                logprobs.extend([0.0] * len(cur_input_ids))  # user tokens: no logprob
+                loss_mask.extend([0] * len(cur_input_ids))   # user tokens: not trained
+                versions.extend([-1] * len(cur_input_ids))
 
-            new_text = self.processor.tokenizer.apply_chat_template(
-                conversation=new_messages, tokenize=False, add_generation_prompt=True
-            )
+                if new_images:
+                    pv = processed_input["pixel_values"]
+                    thw = processed_input.get("image_grid_thw", None)
+                    pv_segs.append(pv)
+                    if thw is not None:
+                        thw_segs.append(thw)
+                    all_images.extend(new_images)
 
-            processed_input = self.processor(
-                images=new_images if new_images else None,
-                text=new_text,
-                padding=False,
-                return_tensors="pt",
-            )
-
-            cur_input_ids = processed_input["input_ids"].tolist()[0]
-            input_ids.extend(cur_input_ids)
-            logprobs.extend([0.0] * len(cur_input_ids))  # user tokens: no logprob
-            loss_mask.extend([0] * len(cur_input_ids))   # user tokens: not trained
-            versions.extend([-1] * len(cur_input_ids))
-
-            if new_images:
-                pv = processed_input["pixel_values"]
-                thw = processed_input["image_grid_thw"]
-                pv_segs.append(pv)
-                thw_segs.append(thw)
-                all_images.extend(new_images)
+            else:
+                # LLM path: text-only using tokenizer
+                new_text = _apply_chat_template_safe(
+                    self.tokenizer, new_messages, tokenize=False, add_generation_prompt=True
+                )
+                cur_input_ids = self.tokenizer(new_text, return_tensors="pt")["input_ids"][0].tolist()
+                input_ids.extend(cur_input_ids)
+                logprobs.extend([0.0] * len(cur_input_ids))
+                loss_mask.extend([0] * len(cur_input_ids))
+                versions.extend([-1] * len(cur_input_ids))
 
             # A fixed assistant message to measure its tokenized prefix length.
             fixed_message = {"role": "assistant", "content": "random messages"}
-            fixed_token_id_len = len(
-                self.processor.tokenizer.apply_chat_template(
-                    conversation=[fixed_message],
-                    tokenize=True,
-                    add_generation_prompt=False,
-                )
+
+            fixed_token_ids = _apply_chat_template_safe(
+                self.tokenizer,
+                [fixed_message],
+                tokenize=True,
+                add_generation_prompt=False,
             )
+            # fixed_token_ids may be tensor or list depending on path; make list[int]
+            if hasattr(fixed_token_ids, "tolist"):
+                fixed_token_id_len = len(fixed_token_ids.tolist())
+            else:
+                fixed_token_id_len = len(list(fixed_token_ids))
 
             # ===== Main loop =====
             while t < max_turns:
-                # Assistant generation using incremental prompt + all images so far
+                # Assistant generation using incremental prompt + all images so far (VLM will ignore if empty)
                 img_b64 = image2base64(all_images) if all_images else []
 
                 req = ModelRequest(
@@ -203,52 +276,69 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 # Step env (ASYNC)
                 next_obs, r, done, info = await env.step(assistant_text)
                 cumulative_reward += float(r)
-                if done or (t + 1) >= self.max_turns:
+                if done or (t + 1) >= max_turns:
                     break
 
                 # Build next user delta (assistant prefix is elided via fixed_token_id_len)
+                next_images = get_images_from_multi_modal_input(
+                    next_obs.get("multi_modal_input"), self.image_placeholder
+                )
+                for_vlm_turn = len(next_images) > 0 and _is_vlm_processor(self.processor)
+
                 new_messages = [
-                    fixed_message,
+                    fixed_message,  # used only for measuring/stripping prefix later
                     {
                         "role": "user",
                         "content": convert_placeholder_to_image_token(
-                            next_obs["obs_str"], self.image_placeholder, self.processor
+                            next_obs["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
                         ),
                     },
                 ]
 
-                # BUGFIX: previously pulled images from init_obs; now from next_obs
-                new_images = get_images_from_multi_modal_input(
-                    next_obs.get("multi_modal_input"), self.image_placeholder
-                )
+                if for_vlm_turn:
+                    # VLM delta: process with processor (vision-enabled)
+                    text_for_proc = _apply_chat_template_safe(
+                        self.tokenizer,
+                        new_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    processed_input = self.processor(
+                        images=next_images if next_images else None,
+                        text=text_for_proc,
+                        padding=False,
+                        return_tensors="pt",
+                    )
+                    cur_ids_full = processed_input["input_ids"].tolist()[0]
+                    cur_input_ids = cur_ids_full[fixed_token_id_len:]
 
-                new_text = self.processor.tokenizer.apply_chat_template(
-                    conversation=new_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
+                    input_ids += cur_input_ids
+                    logprobs += [0.0] * len(cur_input_ids)  # user tokens
+                    loss_mask += [0] * len(cur_input_ids)   # user tokens
+                    versions += [-1] * len(cur_input_ids)
 
-                processed_input = self.processor(
-                    images=new_images if new_images else None,
-                    text=new_text,
-                    padding=False,
-                    return_tensors="pt",
-                )
+                    if next_images:
+                        pv = processed_input["pixel_values"]
+                        thw = processed_input.get("image_grid_thw", None)
+                        pv_segs.append(pv)
+                        if thw is not None:
+                            thw_segs.append(thw)
+                        all_images.extend(next_images)
+                else:
+                    # LLM delta: text-only
+                    new_text = _apply_chat_template_safe(
+                        self.tokenizer,
+                        new_messages,
+                        tokenize=False,
+                        add_generation_prompt=True,
+                    )
+                    cur_ids_full = self.tokenizer(new_text, return_tensors="pt")["input_ids"][0].tolist()
+                    cur_input_ids = cur_ids_full[fixed_token_id_len:]
 
-                # Only append the delta after the fixed assistant-prefix tokens
-                cur_ids_full = processed_input["input_ids"].tolist()[0]
-                cur_input_ids = cur_ids_full[fixed_token_id_len:]
-                input_ids += cur_input_ids
-                logprobs += [0.0] * len(cur_input_ids)  # user tokens
-                loss_mask += [0] * len(cur_input_ids)   # user tokens
-                versions += [-1] * len(cur_input_ids)
-
-                if new_images:
-                    pv = processed_input["pixel_values"]
-                    thw = processed_input["image_grid_thw"]
-                    pv_segs.append(pv)
-                    thw_segs.append(thw)
-                    all_images.extend(new_images)
+                    input_ids += cur_input_ids
+                    logprobs += [0.0] * len(cur_input_ids)
+                    loss_mask += [0] * len(cur_input_ids)
+                    versions += [-1] * len(cur_input_ids)
 
                 t += 1
 
@@ -270,18 +360,16 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 multi_modal_input["image_grid_thw"] = torch.cat(thw_segs, dim=0)
 
             if multi_modal_input:
-                # Sanity check: #<|image_pad|> (or equivalent) should match #visual features after merging
-                num_image_pad_tokens = (
-                    (res["input_ids"] == getattr(self.processor, "image_token_id", -9999))
-                    .sum()
-                    .item()
-                )
-                merge_sz = getattr(self.processor.image_processor, "merge_size", 1)
-                num_pixel_features = multi_modal_input["pixel_values"].shape[0] // (merge_sz**2)
-                assert num_image_pad_tokens == num_pixel_features, (
-                    f"Mismatch: input_ids has {num_image_pad_tokens} <|image_pad|> tokens, "
-                    f"but pixel_values has {num_pixel_features} features"
-                )
+                # Sanity check only if processor exposes image_token_id/merge_size
+                image_token_id = getattr(self.processor, "image_token_id", None) if self.processor else None
+                if image_token_id is not None:
+                    num_image_pad_tokens = (res["input_ids"] == image_token_id).sum().item()
+                    merge_sz = getattr(getattr(self.processor, "image_processor", None), "merge_size", 1) if self.processor else 1
+                    num_pixel_features = multi_modal_input["pixel_values"].shape[0] // (merge_sz ** 2)
+                    assert num_image_pad_tokens == num_pixel_features, (
+                        f"Mismatch: input_ids has {num_image_pad_tokens} image tokens, "
+                        f"but pixel_values has {num_pixel_features} features"
+                    )
                 res["multi_modal_input"] = [multi_modal_input]
 
             total_str = self.tokenizer.decode(input_ids)
