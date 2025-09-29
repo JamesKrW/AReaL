@@ -164,6 +164,7 @@ class AgenticDataset(Dataset):
                         "name": spec.name,
                         "seed": env_seed,
                         "config": spec.config,
+                        "max_turns": spec.max_turns,
                     }
                 )
 

@@ -14,12 +14,15 @@ class EnvSpec:
     # Environment-specific configuration passed through untouched
     config: Dict[str, Any] = field(default_factory=dict)
     # Seed directive: [base] | [min, max] | [min, max, limit]
+    # 1-element list: fixed base seed
+    # 2-element list: for each env, uniformly random sample a seed in [min, max]
+    # 3-element list: as above, but each seed occur at most 'limit' times
     seed: List[int] = field(default_factory=lambda: [0])
     # Optional explicit per-instance seeds; must be longer than n_envs
     seed_list: Optional[List[int]] = None
+    max_turns: int =1
 
 
 @dataclass
 class AgentGRPOConfig(GRPOConfig):
     envs: List[EnvSpec] = field(default_factory=list)
-    max_turns: int = 5

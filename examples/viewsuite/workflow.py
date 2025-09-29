@@ -74,14 +74,12 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         gconfig: GenerationHyperparameters,
         tokenizer: PreTrainedTokenizerFast,
         processor: AutoProcessor,
-        max_turns: int,
         image_placeholder: str = "<image>",
         dump_dir: str | None = None,
     ):
         self.gconfig = gconfig
         self.tokenizer = tokenizer
         self.processor = processor
-        self.max_turns = max_turns
         self.image_placeholder = image_placeholder
         self.dump_dir = dump_dir
         if self.dump_dir is not None and not os.path.exists(self.dump_dir):
@@ -91,6 +89,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         self, engine: InferenceEngine, data: dict, rid: str
     ) -> Tuple[TensorDict, str, float, int]:
         seed = data["seed"]
+        max_turns = data.get("max_turns", 1)
         # Instantiate async env
         env: GymImageEnv = REGISTERED_ENVS[data["name"]](data["config"])
         try:
@@ -167,7 +166,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
             )
 
             # ===== Main loop =====
-            while t < self.max_turns:
+            while t < max_turns:
                 # Assistant generation using incremental prompt + all images so far
                 img_b64 = image2base64(all_images) if all_images else []
 
