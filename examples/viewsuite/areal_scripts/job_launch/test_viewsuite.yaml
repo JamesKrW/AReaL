@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: gsm8k_grpo_test
+trial_name: viewsuite_test
 
 seed: 1
 total_train_epochs: 10
@@ -162,7 +162,7 @@ envs:
   - name: GymProxyNoTool
     n_envs: 560
     seed: [1,561,1]
-    split: test
+    split: valid
     max_turns: 1
     config:
       jsonl_path: /mnt/disk/project/viewsuite/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
