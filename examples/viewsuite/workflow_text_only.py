@@ -20,7 +20,7 @@ from areal.utils.image import image2base64
 from realhf.base import logging
 from view_suite.gym.gym_image_env import GymImageEnv
 from registry import REGISTERED_ENVS
-
+import traceback
 logger = logging.getLogger("Vision Multi-Turn AgentEnv workflow")
 
 
@@ -374,7 +374,10 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
 
             total_str = self.tokenizer.decode(input_ids)
             return TensorDict(res, batch_size=[1]), total_str, cumulative_reward, len(input_ids)
-
+        #get detailed error if something goes wrong
+        except Exception as e:
+            logger.error(f"Error during episode rollout: {e}", exc_info=True)
+            raise 
         finally:
             try:
                 await env.close()
