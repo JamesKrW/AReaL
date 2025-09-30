@@ -1,6 +1,6 @@
 experiment_name: areal
 trial_name: viewsuite_test
-
+fileroot: /home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
 tokenizer_path: ${actor.path}
@@ -9,10 +9,10 @@ async_training: true
 cluster:
   n_nodes: 1
   n_gpus_per_node: 2
-  fileroot: /mnt/disk/project/viewsuite/experiments
+  fileroot: ${fileroot}/experiments
   name_resolve:
     type: nfs
-    nfs_record_root: /mnt/disk/project/viewsuite/name_resolve
+    nfs_record_root: ${fileroot}/name_resolve
 
 allocation_mode: sglang.d1p1t1+d1p1t1
 
@@ -156,7 +156,7 @@ envs:
     split: train
     max_turns: 1
     config:
-      jsonl_path: /mnt/disk/project/viewsuite/data/scannet_proxy_task_train/forward_dynamics_qa.jsonl
+      jsonl_path: ${fileroot}/data/scannet_proxy_task_train/forward_dynamics_qa.jsonl
 
       
   - name: GymProxyNoTool
@@ -165,4 +165,4 @@ envs:
     split: valid
     max_turns: 1
     config:
-      jsonl_path: /mnt/disk/project/viewsuite/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
+      jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
