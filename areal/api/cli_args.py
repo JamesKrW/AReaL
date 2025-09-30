@@ -23,7 +23,8 @@ class NormConfig:
     mean_level: str | None = field(
         default="batch",
         metadata={
-            "help": "Mean level for normalization. Choices: batch, group. Omit for no mean normalization."
+            "help": "Mean level for normalization. None for no mean normalization.",
+            "choices": ["batch", "group", None],
         },
     )
     mean_leave1out: bool = field(
@@ -33,7 +34,8 @@ class NormConfig:
     std_level: str | None = field(
         default="batch",
         metadata={
-            "help": "Standard deviation level for normalization. Choices: batch, group. Omit for no std normalization."
+            "help": "Standard deviation level for normalization. None for no std normalization.",
+            "choices": ["batch", "group", None],
         },
     )
     std_unbiased: bool = field(
@@ -374,6 +376,10 @@ class PPOActorConfig(TrainEngineConfig):
 
     # KL Control
     kl_ctl: float = field(default=0.1, metadata={"help": "KL divergence coefficient"})
+    kl_estimator: str = field(
+        default="k1",
+        metadata={"help": "KL divergence estimator", "choices": ["k1", "k2", "k3"]},
+    )
 
     # Asynchronous RL
     recompute_logprob: bool = field(
@@ -449,7 +455,7 @@ class vLLMConfig:
     skip_tokenizer_init: bool = False
     enforce_eager: bool = True
     dtype: str = "bfloat16"
-    distributed_executor_backend = "mp"
+    distributed_executor_backend: str = "mp"
     # original
     max_num_seqs: int = 256
     # kv_cache_type: str = "auto"
@@ -473,6 +479,7 @@ class vLLMConfig:
         "areal.thirdparty.vllm.vllm_worker_extension.VLLMWorkerExtension"
     )
     enable_sleep_mode: bool = False
+    uvicorn_log_level: str = "warning"
 
     @staticmethod
     def build_args(
