@@ -11,7 +11,7 @@ pip install torch==2.7.1 torchaudio==2.7.1 torchvision==0.22.1 "deepspeed>=0.17.
 pip install "flash-attn==2.8.3" --no-build-isolation
 pip install flashinfer-python==0.2.11.post3 --no-build-isolation
 
-pip install vllm==0.10.1
+#pip install vllm==0.10.1
 
 # Megatron & other GPU tools
 pip install megatron-core==0.13.1
@@ -23,6 +23,6 @@ pip install openai==1.99.6
 
 
 pip install -e .[dev]
-#pip install "sglang[all]<=0.5.1"
+pip install "sglang[all]<=0.5.1"
 
 pip install -e evaluation/latex2sympy
