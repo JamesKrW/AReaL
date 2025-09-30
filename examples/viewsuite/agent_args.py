@@ -25,4 +25,5 @@ class EnvSpec:
 
 @dataclass
 class AgentGRPOConfig(GRPOConfig):
+    fileroot: str = "./data"
     envs: List[EnvSpec] = field(default_factory=list)
