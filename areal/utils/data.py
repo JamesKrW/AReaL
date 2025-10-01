@@ -19,7 +19,7 @@ logger = logging.getLogger("data utils")
 
 
 def get_batch_size(data: Dict[str, Any]) -> int:
-    if not data:
+    if data is not None:
         return 0
 
     am = data.get("attention_mask")
