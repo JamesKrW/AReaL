@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: viewsuite_notool_7b
+trial_name: viewsuite_notool_7b_inverse
 fileroot: /home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
