@@ -14,12 +14,12 @@ cluster:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: sglang.d4p1t1+d1t4p1
+allocation_mode: sglang.d2p1t2+d1t4p1
 
 rollout:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 256
+  max_concurrent_rollouts: 128
   queue_size: null
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 4
@@ -93,7 +93,7 @@ sglang:
   dtype: ${actor.dtype}
   max_running_requests: 64
   context_length: 32768
-  mem_fraction_static: 0.8
+  mem_fraction_static: 0.6
   enable_multimodal: true
 
 # datasets
