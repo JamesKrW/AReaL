@@ -35,7 +35,7 @@ from torch.utils.data import Dataset
 from typing import List, Dict, Any
 from dataset import build_env_dataset
 from agent_args import AgentGRPOConfig
-from workflow_text_only import VisionMultiTurnAgentEnvWorkflow
+from workflow_new import VisionMultiTurnAgentEnvWorkflow
 # ------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ def main(args):
         config.envs,
         split="valid",
         base_seed=config.seed,
-        rank=rank,
+        rank=actor.data_parallel_rank,
         world_size=actor.data_parallel_world_size,
     )
     # Create dataset and dataloaders

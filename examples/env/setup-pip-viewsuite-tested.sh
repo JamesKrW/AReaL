@@ -19,9 +19,9 @@ pip install git+https://github.com/garrett4wade/cugae@f0c7198cb3e7265f43218a65ea
 
 
 
-pip install -e .[dev]
+# pip install -e .[dev]
 # Transformers & OpenAI SDK
 # pip install transformers==4.56.0
 # pip install openai==1.99.6
 
-pip install -e evaluation/latex2sympy
+# cd
