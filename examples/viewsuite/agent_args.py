@@ -1,4 +1,4 @@
-from areal.api.cli_args import GRPOConfig
+from areal.api.cli_args import GRPOConfig,GenerationHyperparameters
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -26,5 +26,8 @@ class EnvSpec:
 
 @dataclass
 class AgentGRPOConfig(GRPOConfig):
+    gconfig_eval: GenerationHyperparameters = field(
+        default_factory=GenerationHyperparameters
+    )
     fileroot: str = "./data"
     envs: List[EnvSpec] = field(default_factory=list)
