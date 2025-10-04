@@ -40,13 +40,6 @@ gconfig_eval:
   temperature: ${gconfig.temperature}
   
 
-gconfig_eval:
-  n_samples: 1
-  min_new_tokens: ${gconfig.min_new_tokens}
-  max_new_tokens: ${gconfig.max_new_tokens}
-  greedy: ${gconfig.greedy}
-  temperature: ${gconfig.temperature}
-
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
@@ -150,8 +143,8 @@ evaluator:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  freq_epochs: null
-  freq_steps: 1
+  freq_epochs: 1
+  freq_steps: null
   freq_secs: null
 
 stats_logger:
