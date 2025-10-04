@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: viewsuite_notool_7b
+trial_name: viewsuite_notool_7b-eval-test
 fileroot: /home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
@@ -32,6 +32,13 @@ gconfig:
   greedy: false
   temperature: 1.0
 
+gconfig_eval:
+  n_samples: 1
+  min_new_tokens: ${gconfig.min_new_tokens}
+  max_new_tokens: ${gconfig.max_new_tokens}
+  greedy: ${gconfig.greedy}
+  temperature: ${gconfig.temperature}
+  
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
@@ -135,8 +142,8 @@ evaluator:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  freq_epochs: 1
-  freq_steps: null
+  freq_epochs: null
+  freq_steps: 1
   freq_secs: null
 
 stats_logger:

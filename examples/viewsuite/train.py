@@ -143,7 +143,7 @@ def main(args):
         ),
     )
     eval_workflow = VisionMultiTurnAgentEnvWorkflow(
-        gconfig=config.gconfig,
+        gconfig=config.gconfig_eval,
         tokenizer=tokenizer,
         processor=processor,
         dump_dir=os.path.join(
