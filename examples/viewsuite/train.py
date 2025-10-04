@@ -226,6 +226,8 @@ def main(args):
                         tag_reward = rewards_tensor[mask].mean().item()
                         tag_key = f"tag_{tag_id}"
                         stats_tracker.scalar(**{f"train_avg_reward/{tag_key}": float(tag_reward)})
+        dist.barrier(device_ids=[actor.device.index])
+        current_platform.synchronize()
                         
         if config.actor.recompute_logprob or config.actor.use_decoupled_loss:
             with stats_tracker.record_timing("recompute_logp"):
