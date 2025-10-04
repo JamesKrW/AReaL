@@ -1,6 +1,6 @@
 experiment_name: areal
 trial_name: viewsuite_notool_7b-eval-test
-fileroot: /home/aiscuser/projects
+fileroot: /blob/v-kangwang/viewsuite #/home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
 tokenizer_path: ${actor.path}
