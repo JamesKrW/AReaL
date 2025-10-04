@@ -154,6 +154,7 @@ launcher:
 
 envs:
   - name: GymProxyNoTool
+    tag_id: 0
     n_envs: 4460
     seed: [1,4461,1]
     split: train
@@ -163,9 +164,19 @@ envs:
 
       
   - name: GymProxyNoTool
+    tag_id: 0
     n_envs: 560
     seed: [1,561,1]
     split: valid
     max_turns: 1
     config:
       jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
+
+  - name: GymProxyNoTool
+    tag_id: 1
+    n_envs: 560
+    seed: [1,561,1]
+    split: valid
+    max_turns: 1
+    config:
+      jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/inverse_dynamics_qa.jsonl

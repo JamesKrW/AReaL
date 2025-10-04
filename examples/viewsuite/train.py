@@ -239,6 +239,19 @@ def main(args):
         # pause inference for updating weights, save, and evaluation
         rollout.pause()
 
+        if actor.is_data_parallel_head() and "rewards" in batch and "tag_id" in batch:
+            rewards_tensor = batch["rewards"].detach().float().cpu().view(-1)
+            tag_tensor = batch["tag_id"].detach().long().cpu().view(-1)
+            if rewards_tensor.numel() > 0 and tag_tensor.numel() == rewards_tensor.numel():
+                stats_tracker.scalar(train_avg_reward=float(rewards_tensor.mean().item()))
+                unique_tags = torch.unique(tag_tensor)
+                for tag_id in unique_tags.tolist():
+                    mask = tag_tensor == tag_id
+                    if mask.any():
+                        tag_reward = rewards_tensor[mask].mean().item()
+                        tag_key = f"tag_{tag_id}"
+                        stats_tracker.scalar(**{f"train_avg_reward/{tag_key}": float(tag_reward)})
+
         with stats_tracker.record_timing("update_weights"):
             if dist.get_rank() == 0:
                 future = rollout.update_weights(weight_update_meta)
@@ -280,6 +293,9 @@ def main(args):
         with stats_tracker.record_timing("eval"):
 
             def evaluate_fn():
+                eval_avg_reward = None
+                per_tag_totals: Dict[int, float] = {}
+                per_tag_counts: Dict[int, int] = {}
                 if actor.is_data_parallel_head():
                     # Stats are logged in workflow
                     # and will be exported later
@@ -288,9 +304,27 @@ def main(args):
                         for item in data:
                             eval_rollout.submit(item, eval_workflow)
                             cnt += 1
-                    eval_rollout.wait(cnt, timeout=None)
+                    results = eval_rollout.wait(cnt, timeout=None)
+                    if "rewards" in results:
+                        rewards_tensor = results["rewards"].float().view(-1).cpu()
+                        if rewards_tensor.numel() > 0:
+                            eval_avg_reward = float(rewards_tensor.mean().item())
+                        if "tag_id" in results:
+                            tag_tensor = results["tag_id"].long().view(-1).cpu()
+                            if tag_tensor.numel() == rewards_tensor.numel():
+                                for reward, tag_id in zip(rewards_tensor.tolist(), tag_tensor.tolist()):
+                                    per_tag_totals[tag_id] = per_tag_totals.get(tag_id, 0.0) + reward
+                                    per_tag_counts[tag_id] = per_tag_counts.get(tag_id, 0) + 1
                 dist.barrier(device_ids=[actor.device.index])
                 current_platform.synchronize()
+
+                if eval_avg_reward is not None:
+                    stats_tracker.scalar(eval_avg_reward=eval_avg_reward)
+                    for tag_id, total in per_tag_totals.items():
+                        count = per_tag_counts.get(tag_id, 0)
+                        if count > 0:
+                            tag_key = f"tag_{tag_id}"
+                            stats_tracker.scalar(**{f"eval_avg_reward/{tag_key}": total / count})
 
             evaluator.evaluate(
                 evaluate_fn,

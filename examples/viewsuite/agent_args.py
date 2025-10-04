@@ -11,6 +11,7 @@ class EnvSpec:
     n_envs: int
     # Which dataset split this spec belongs to ("train" | "valid" | ...)
     split: str
+    tag_id: int = 0
     # Environment-specific configuration passed through untouched
     config: Dict[str, Any] = field(default_factory=dict)
     # Seed directive: [base] | [min, max] | [min, max, limit]

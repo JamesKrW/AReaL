@@ -352,6 +352,8 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
                 "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
             }
+            tag_id = int(data.get("tag_id", -1))
+            res["tag_id"] = torch.tensor([tag_id], dtype=torch.long)
 
             multi_modal_input: Dict[str, torch.Tensor] = {}
             if pv_segs:

@@ -159,12 +159,14 @@ class AgenticDataset(Dataset):
                 if i % world_size != rank:
                     continue
                 # Each record contains env metadata and the resolved RNG seed
+                tag_id = int(getattr(spec, "tag_id", 0))
                 self.items.append(
                     {
                         "name": spec.name,
                         "seed": env_seed,
                         "config": spec.config,
                         "max_turns": spec.max_turns,
+                        "tag_id": tag_id,
                     }
                 )
 
