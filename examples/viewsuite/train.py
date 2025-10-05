@@ -125,7 +125,9 @@ def main(args):
     #         AllocationMode.from_str(config.allocation_mode), actor
     #     )
     # ]
-    weight_update_meta = [WeightUpdateMeta.from_disk(config.saver)]
+    weight_update_meta = [WeightUpdateMeta.from_disk(experiment_name=config.saver.experiment_name,
+                                                     trial_name=config.saver.trial_name,
+                                                     file_root=config.saver.fileroot)]
     dist.broadcast_object_list(weight_update_meta, src=0)
     weight_update_meta = weight_update_meta[0]
 

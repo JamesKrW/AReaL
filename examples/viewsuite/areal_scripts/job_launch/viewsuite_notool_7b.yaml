@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: viewsuite_notool_7b-eval-0
+trial_name: viewsuite_notool_7b-forward-0
 fileroot: /blob/v-kangwang/viewsuite #/home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
