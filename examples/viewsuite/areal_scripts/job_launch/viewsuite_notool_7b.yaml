@@ -1,5 +1,5 @@
 experiment_name: areal
-trial_name: viewsuite_notool_7b-eval-test
+trial_name: viewsuite_notool_7b-eval-0
 fileroot: /blob/v-kangwang/viewsuite #/home/aiscuser/projects
 seed: 1
 total_train_epochs: 10
@@ -19,7 +19,7 @@ allocation_mode: sglang.d2p1t2+d1t4p1
 rollout:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 128
+  max_concurrent_rollouts: 64
   queue_size: null
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 4
@@ -101,7 +101,7 @@ sglang:
   dtype: ${actor.dtype}
   max_running_requests: 64
   context_length: 32768
-  mem_fraction_static: 0.6
+  mem_fraction_static: 0.4
   enable_multimodal: true
 
 # datasets
@@ -131,7 +131,7 @@ saver:
   freq_secs: null
 
 recover:
-  mode: disabled
+  mode: auto
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
