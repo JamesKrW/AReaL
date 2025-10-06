@@ -33,3 +33,4 @@ class AgentGRPOConfig(GRPOConfig):
     gconfig_eval: GenerationHyperparameters = field(
         default_factory=GenerationHyperparameters
     )
+    eval_first: bool = True
