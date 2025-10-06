@@ -279,8 +279,22 @@ def main(args):
                 src_rank=actor.current_data_parallel_head(),
                 group=actor.context_and_model_parallel_group,
             )
-
-        # Sync rollout processes
+        # Create barrier to synchronize all rollout processes.
+        dist.barrier(device_ids=[actor.device.index])
+        current_platform.synchronize()
+        
+        if actor.is_data_parallel_head() and "rewards" in batch and "tag_id" in batch:
+            rewards_tensor = batch["rewards"].detach().float().cpu().view(-1)
+            tag_tensor = batch["tag_id"].detach().long().cpu().view(-1)
+            if rewards_tensor.numel() > 0 and tag_tensor.numel() == rewards_tensor.numel():
+                stats_tracker.scalar(train_avg_reward=float(rewards_tensor.mean().item()))
+                unique_tags = torch.unique(tag_tensor)
+                for tag_id in unique_tags.tolist():
+                    mask = tag_tensor == tag_id
+                    if mask.any():
+                        tag_reward = rewards_tensor[mask].mean().item()
+                        tag_key = f"tag_{tag_id}"
+                        stats_tracker.scalar(**{f"train_avg_reward/{tag_key}": float(tag_reward)})
         dist.barrier(device_ids=[actor.device.index])
         current_platform.synchronize()
 
