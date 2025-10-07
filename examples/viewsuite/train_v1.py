@@ -98,6 +98,93 @@ def submit_with_backpressure(engine: RemoteSGLangEngine, items, workflow, max_in
     return aggregated
 
 
+def run_evaluation(
+    evaluator: Evaluator,
+    eval_rollout: RemoteSGLangEngine,
+    eval_workflow: VisionMultiTurnAgentEnvWorkflow,
+    valid_dataloader: StatefulDataLoader,
+    actor: FSDPPPOActor,
+    epoch: int,
+    step: int,
+    global_step: int,
+):
+    """
+    Reusable evaluation entry used both at the beginning (eval_first) and each training step.
+    - Only global rank 0 submits evaluation jobs to avoid queue flooding.
+    - Backpressure submission with bounded inflight.
+    - Tag-wise aggregation and logging via stats_tracker.
+    - Proper synchronization barriers for multi-node/multi-GPU.
+    """
+    with stats_tracker.record_timing("eval"):
+
+        def evaluate_fn():
+            # Only global rank 0 submits evaluation jobs
+            if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+                dist.barrier(device_ids=[actor.device.index])
+                current_platform.synchronize()
+                return
+
+            eval_avg_reward = None
+            per_tag_totals: Dict[int, float] = {}
+            per_tag_counts: Dict[int, int] = {}
+
+            # Derive a conservative inflight cap from config if available.
+            max_inflight = 256
+            try:
+                qsz = getattr(eval_rollout.config, "queue_size", None)
+                mcr = getattr(eval_rollout.config, "max_concurrent_rollouts", 64)
+                if qsz:
+                    max_inflight = min(int(qsz), 2 * int(mcr))
+            except Exception:
+                pass
+
+            # Stream submissions with backpressure
+            def gen_items():
+                for data in valid_dataloader:
+                    for item in data:
+                        yield item
+
+            results = submit_with_backpressure(
+                eval_rollout,
+                gen_items(),
+                eval_workflow,
+                max_inflight=max_inflight,
+            )
+
+            # Aggregate metrics if present
+            if isinstance(results, dict) and "rewards" in results:
+                rewards_tensor = results["rewards"].float().view(-1).cpu()
+                if rewards_tensor.numel() > 0:
+                    eval_avg_reward = float(rewards_tensor.mean().item())
+                if "tag_id" in results:
+                    tag_tensor = results["tag_id"].long().view(-1).cpu()
+                    if tag_tensor.numel() == rewards_tensor.numel():
+                        for reward, tag_id in zip(rewards_tensor.tolist(), tag_tensor.tolist()):
+                            per_tag_totals[tag_id] = per_tag_totals.get(tag_id, 0.0) + reward
+                            per_tag_counts[tag_id] = per_tag_counts.get(tag_id, 0) + 1
+
+            dist.barrier(device_ids=[actor.device.index])
+            current_platform.synchronize()
+
+            if eval_avg_reward is not None:
+                stats_tracker.scalar(eval_avg_reward=eval_avg_reward)
+                for tag_id, total in per_tag_totals.items():
+                    count = per_tag_counts.get(tag_id, 0)
+                    if count > 0:
+                        tag_key = f"tag_{tag_id}"
+                        stats_tracker.scalar(**{f"eval_avg_reward/{tag_key}": total / count})
+
+        evaluator.evaluate(
+            evaluate_fn,
+            epoch,
+            step,
+            global_step,
+        )
+
+    dist.barrier(device_ids=[actor.device.index])
+    current_platform.synchronize()
+
+
 # ------------------------------------------------------
 # Main
 # ------------------------------------------------------
@@ -246,6 +333,23 @@ def main(args):
     steps_per_epoch = len(train_dataloader)
     max_steps = total_epochs * steps_per_epoch
 
+    # ------------------------------------------------------
+    # (NEW) Optional evaluation before training loop
+    # ------------------------------------------------------
+    # We keep versions at their initial values; this measures current model state.
+    if getattr(config, "eval_first", False):
+        # Use epoch=0, step=0, and current global_step (start_step) for bookkeeping.
+        run_evaluation(
+            evaluator=evaluator,
+            eval_rollout=eval_rollout,
+            eval_workflow=eval_workflow,
+            valid_dataloader=valid_dataloader,
+            actor=actor,
+            epoch=0,
+            step=0,
+            global_step=start_step,
+        )
+
     data_generator = cycle_dataloader(train_dataloader)
     for global_step in range(start_step, max_steps):
         epoch = global_step // steps_per_epoch
@@ -369,75 +473,17 @@ def main(args):
         dist.barrier(device_ids=[actor.device.index])
         current_platform.synchronize()
 
-        # ---------- Evaluation ----------
-        with stats_tracker.record_timing("eval"):
-
-            def evaluate_fn():
-                # Only global rank 0 submits evaluation jobs to avoid overfilling the queue across DP groups.
-                if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
-                    dist.barrier(device_ids=[actor.device.index])
-                    current_platform.synchronize()
-                    return
-
-                eval_avg_reward = None
-                per_tag_totals: Dict[int, float] = {}
-                per_tag_counts: Dict[int, int] = {}
-
-                # Derive a conservative inflight cap from config if available.
-                max_inflight = 256
-                try:
-                    qsz = getattr(eval_rollout.config, "queue_size", None)
-                    mcr = getattr(eval_rollout.config, "max_concurrent_rollouts", 64)
-                    if qsz:
-                        max_inflight = min(int(qsz), 2 * int(mcr))
-                except Exception:
-                    pass
-
-                # Stream submissions with backpressure
-                def gen_items():
-                    for data in valid_dataloader:
-                        for item in data:
-                            yield item
-
-                results = submit_with_backpressure(
-                    eval_rollout,
-                    gen_items(),
-                    eval_workflow,
-                    max_inflight=max_inflight,
-                )
-
-                # Aggregate metrics if present
-                if isinstance(results, dict) and "rewards" in results:
-                    rewards_tensor = results["rewards"].float().view(-1).cpu()
-                    if rewards_tensor.numel() > 0:
-                        eval_avg_reward = float(rewards_tensor.mean().item())
-                    if "tag_id" in results:
-                        tag_tensor = results["tag_id"].long().view(-1).cpu()
-                        if tag_tensor.numel() == rewards_tensor.numel():
-                            for reward, tag_id in zip(rewards_tensor.tolist(), tag_tensor.tolist()):
-                                per_tag_totals[tag_id] = per_tag_totals.get(tag_id, 0.0) + reward
-                                per_tag_counts[tag_id] = per_tag_counts.get(tag_id, 0) + 1
-
-                dist.barrier(device_ids=[actor.device.index])
-                current_platform.synchronize()
-
-                if eval_avg_reward is not None:
-                    stats_tracker.scalar(eval_avg_reward=eval_avg_reward)
-                    for tag_id, total in per_tag_totals.items():
-                        count = per_tag_counts.get(tag_id, 0)
-                        if count > 0:
-                            tag_key = f"tag_{tag_id}"
-                            stats_tracker.scalar(**{f"eval_avg_reward/{tag_key}": total / count})
-
-            evaluator.evaluate(
-                evaluate_fn,
-                epoch,
-                step,
-                global_step,
-            )
-
-        dist.barrier(device_ids=[actor.device.index])
-        current_platform.synchronize()
+        # ---------- Evaluation ---------- (reused)
+        run_evaluation(
+            evaluator=evaluator,
+            eval_rollout=eval_rollout,
+            eval_workflow=eval_workflow,
+            valid_dataloader=valid_dataloader,
+            actor=actor,
+            epoch=epoch,
+            step=step,
+            global_step=global_step,
+        )
 
         # ---------- Log stats ----------
         stats[0].update(

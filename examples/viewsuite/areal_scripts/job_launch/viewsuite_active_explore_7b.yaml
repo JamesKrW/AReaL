@@ -14,12 +14,12 @@ cluster:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: sglang.d6p1t2+d1t4p1
+allocation_mode: sglang.d4t2+d2t2c2
 
 rollout:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  max_concurrent_rollouts: 64
+  max_concurrent_rollouts: 128
   queue_size: 4096
   consumer_batch_size: ${train_dataset.batch_size}
   max_head_offpolicyness: 4
