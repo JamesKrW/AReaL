@@ -175,7 +175,7 @@ envs:
 
       
   - name: GymProxyNoTool
-    n_envs: 560
+    n_envs: 280 #560
     tag_id: 1
     seed: [1,561,1]
     split: valid
@@ -184,7 +184,7 @@ envs:
       jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/inverse_dynamics_qa.jsonl
 
   - name: GymProxyNoTool
-    n_envs: 560
+    n_envs: 280 #560
     tag_id: 0
     seed: [1,561,1]
     split: valid
@@ -193,7 +193,7 @@ envs:
       jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
 
   - name: GymProxyTool
-    n_envs: 560
+    n_envs: 280 #560
     tag_id: 2
     seed: [1,561,1]
     split: valid
