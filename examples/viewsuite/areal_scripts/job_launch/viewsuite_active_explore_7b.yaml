@@ -7,14 +7,14 @@ tokenizer_path: ${actor.path}
 async_training: true
 
 cluster:
-  n_nodes: 2
+  n_nodes: 1
   n_gpus_per_node: 8
   fileroot: ${fileroot}/experiments
   name_resolve:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: sglang.d4t2+d2t2c2
+allocation_mode: sglang.d2t2+d1t2c2
 
 rollout:
   experiment_name: ${experiment_name}
@@ -173,6 +173,17 @@ envs:
       render_backend: client
       client_url: ws://165.124.184.151:8766
 
+  - name: GymProxyTool
+    n_envs: 280 #560
+    tag_id: 2
+    seed: [1,561,1]
+    split: valid
+    max_turns: 10
+    config:
+      jsonl_path: ${fileroot}/data/scannet_proxy_task_train/active_explore_qa.jsonl
+      max_turns: ${envs[0].max_turns}
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
       
   - name: GymProxyNoTool
     n_envs: 280 #560
@@ -192,14 +203,3 @@ envs:
     config:
       jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
 
-  - name: GymProxyTool
-    n_envs: 280 #560
-    tag_id: 2
-    seed: [1,561,1]
-    split: valid
-    max_turns: 10
-    config:
-      jsonl_path: ${fileroot}/data/scannet_proxy_task_train/active_explore_qa.jsonl
-      max_turns: ${envs[0].max_turns}
-      render_backend: client
-      client_url: ws://165.124.184.151:8766
