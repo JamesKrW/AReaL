@@ -107,6 +107,7 @@ def run_evaluation(
     epoch: int,
     step: int,
     global_step: int,
+    force: bool = False,
 ):
     """
     Reusable evaluation entry used both at the beginning (eval_first) and each training step.
@@ -173,6 +174,12 @@ def run_evaluation(
                     if count > 0:
                         tag_key = f"tag_{tag_id}"
                         stats_tracker.scalar(**{f"eval_avg_reward/{tag_key}": total / count})
+
+        if force:
+            evaluate_fn()
+            if hasattr(evaluator, "freq_ctl") and evaluator.freq_ctl is not None:
+                evaluator.freq_ctl.time_ctl.reset_time()
+            return
 
         evaluator.evaluate(
             evaluate_fn,
@@ -348,6 +355,7 @@ def main(args):
             epoch=0,
             step=0,
             global_step=start_step,
+            force=True,
         )
 
     data_generator = cycle_dataloader(train_dataloader)
