@@ -392,7 +392,12 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         """
         rid = uuid.uuid4().hex
         tasks = [self._run_one_episode(engine, data, rid) for _ in range(self.gconfig.n_samples)]
-        results = await asyncio.gather(*tasks)
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=False)
+        except Exception as exc:
+            self.logger.error("Episode failed", exc_info=True)
+            return None
+
 
         # Optional dump to disk
         if self.dump_dir is not None:
