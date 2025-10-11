@@ -395,7 +395,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
         try:
             results = await asyncio.gather(*tasks, return_exceptions=False)
         except Exception as exc:
-            self.logger.error("Episode failed", exc_info=True)
+            logger.error("Episode failed", exc_info=True)
             return None
 
 
