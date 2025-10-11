@@ -357,6 +357,25 @@ def main(args):
             global_step=start_step,
             force=True,
         )
+        initial_eval_stats = stats_tracker.export_all(
+            reduce_group=actor.data_parallel_group
+        )
+        if initial_eval_stats:
+            # Force the very first commit to align wandb step with global_step.
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                stats_logger._last_commit_step = start_step - 1
+            initial_epoch = (
+                start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+            )
+            initial_epoch_step = (
+                start_step % steps_per_epoch if steps_per_epoch > 0 else 0
+            )
+            stats_logger.commit(
+                initial_epoch,
+                initial_epoch_step,
+                start_step,
+                initial_eval_stats,
+            )
 
     data_generator = cycle_dataloader(train_dataloader)
     for global_step in range(start_step, max_steps):
