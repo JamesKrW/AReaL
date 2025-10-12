@@ -130,7 +130,7 @@ saver:
   freq_secs: 7200
 
 recover:
-  mode: auto
+  mode: disabled
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}

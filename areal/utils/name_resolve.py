@@ -343,7 +343,7 @@ class NfsNameRecordRepository(NameRecordRepository):
         dir_path = self.__dir_path(name_root)
         if os.path.isdir(dir_path):
             logger.info("Removing name resolve path: %s", dir_path)
-            shutil.rmtree(dir_path)
+            shutil.rmtree(dir_path, ignore_errors=True)
         else:
             logger.info("No such name resolve path: %s", dir_path)
 
