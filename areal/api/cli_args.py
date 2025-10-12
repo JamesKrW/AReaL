@@ -15,7 +15,8 @@ from omegaconf import MISSING, DictConfig, OmegaConf
 
 from areal.platforms import current_platform
 from areal.utils import name_resolve, pkg_version
-
+import time
+import traceback
 
 @dataclass
 class NormConfig:
@@ -1194,11 +1195,20 @@ def conf_as_dict(cfg):
 def save_config(cfg, log_dir):
     os.makedirs(log_dir, exist_ok=True)
     config_save_path = os.path.join(log_dir, "config.yaml")
-    with open(config_save_path, "w") as f:
-        config_dict: Dict = asdict(cfg)
-        yaml.dump(
-            config_dict,
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-        )
+    for i in range(2):
+        try:
+            with open(config_save_path, "w") as f:
+                config_dict: Dict = asdict(cfg)
+                yaml.dump(
+                    config_dict,
+                    f,
+                    default_flow_style=False,
+                    sort_keys=False,
+                )
+            break
+        except Exception as e:
+            if i == 1:
+                traceback.print_exc()
+                raise
+            time.sleep(1) # allow latency in filesystem
+            os.makedirs(log_dir, exist_ok=True)
