@@ -42,7 +42,7 @@ gconfig_eval:
 actor:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
-  path: Qwen/Qwen2.5-VL-7B-Instruct
+  path: /blob/v-kangwang/hf/Qwen/Qwen2.5-VL-7B-Instruct
   init_from_scratch: false
   disable_dropout: true
   gradient_checkpointing: true
