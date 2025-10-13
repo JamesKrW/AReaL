@@ -14,7 +14,7 @@ cluster:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: sglang.d3t2+d1t2
+allocation_mode: sglang.d4+d2c2
 
 rollout:
   experiment_name: ${experiment_name}
@@ -48,7 +48,7 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    max_tokens_per_mb: 32768
+    max_tokens_per_mb: 16384
   optimizer:
     type: adam
     lr: 2e-6
@@ -108,6 +108,11 @@ sglang:
   context_length: 32768
   mem_fraction_static: 0.6
   enable_multimodal: true
+  # # lora
+  # enable_lora: ${actor.use_lora}
+  # max_lora_rank: ${actor.lora_rank}
+  # lora_target_modules: ${actor.target_modules}
+  # schedule_policy: fcfs
 
 # datasets
 train_dataset:
