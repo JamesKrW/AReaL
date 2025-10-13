@@ -14,7 +14,7 @@ cluster:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: sglang.d2t2+d2t2
+allocation_mode: sglang.d2t2+d1t2c2
 
 rollout:
   experiment_name: ${experiment_name}
@@ -48,8 +48,7 @@ actor:
   gradient_checkpointing: true
   dtype: bfloat16
   mb_spec:
-    n_mbs: 1
-    # max_tokens_per_mb: 16384
+    max_tokens_per_mb: 25000
   optimizer:
     type: adam
     lr: 2e-6
@@ -101,12 +100,12 @@ sglang:
   dtype: ${actor.dtype}
   max_running_requests: 64
   context_length: 32768
-  mem_fraction_static: 0.7
+  mem_fraction_static: 0.6
   enable_multimodal: true
 
 # datasets
 train_dataset:
-  batch_size: 32
+  batch_size: 4
   shuffle: true
   pin_memory: true
   num_workers: 4
@@ -114,7 +113,7 @@ train_dataset:
   type: rl
 
 valid_dataset:
-  batch_size: 32
+  batch_size: 2
   shuffle: true
   pin_memory: true
   num_workers: 4
@@ -175,7 +174,7 @@ envs:
       client_url: ws://165.124.184.151:8766/render
 
   - name: GymProxyTool
-    n_envs: 28 #560
+    n_envs: 2 #560
     tag_id: 2
     seed: [1,561,1]
     split: valid
@@ -187,7 +186,7 @@ envs:
       client_url: ws://165.124.184.151:8766/render
 
   - name: GymProxyNoTool
-    n_envs: 28 #560
+    n_envs: 2 #560
     tag_id: 1
     seed: [1,561,1]
     split: valid
@@ -196,7 +195,7 @@ envs:
       jsonl_path: ${fileroot}/data/scannet_proxy_task_dev/inverse_dynamics_qa.jsonl
 
   - name: GymProxyNoTool
-    n_envs: 28 #560
+    n_envs: 2 #560
     tag_id: 0
     seed: [1,561,1]
     split: valid
