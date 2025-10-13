@@ -162,7 +162,6 @@ class MegatronEngine(TrainEngine):
         ):
             model_config.param_sync_func = self.model.start_param_sync
         model_config.finalize_model_grads_func = finalize_model_grads
-
         self.create_optimizer(ft_spec)
 
     def _make_parallel_strategy(
@@ -241,13 +240,18 @@ class MegatronEngine(TrainEngine):
             return
         assert self.model is not None
 
-        assert (
-            self.optimizer_config.type == "adam"
-        ), "Only AdamW optimizer is supported in this engine."
+        assert self.optimizer_config.type in [
+            "adam",
+            "sgd",
+        ], "Only AdamW/sgd optimizer is supported in this engine."
+        if self.optimizer_config.type == "sgd":
+            self.logger.warning(
+                f"Using the 'sgd' optimizer with Megatron may be less stable. Consider using the 'adam' (AdamW) optimizer for improved stability."
+            )
 
         # Make megatron optimizer config
         mcore_opt_config = MCoreOptimizerConfig(
-            optimizer="adam",
+            optimizer=self.optimizer_config.type,
             lr=self.optimizer_config.lr,
             min_lr=self.optimizer_config.min_lr_ratio * self.optimizer_config.lr,
             weight_decay=self.optimizer_config.weight_decay,
@@ -556,6 +560,11 @@ class MegatronEngine(TrainEngine):
             fut.result()
 
     def _update_weights_from_distributed(self, meta: WeightUpdateMeta):
+        if dist.get_rank() == 0:
+            self.rollout_engine.pause_generation()
+
+        dist.barrier(device_ids=[self.device.index])
+
         num_moe_experts = self.tf_config.num_moe_experts
         weight_chunked_mem_size = meta.weight_chunked_mem_mb * 1024 * 1024
 
@@ -598,6 +607,11 @@ class MegatronEngine(TrainEngine):
         if named_tensors:
             # This function will early return if not pipeline parallel head
             self._update_bucket_expert_weights_from_distributed(meta, named_tensors)
+
+        dist.barrier(device_ids=[self.device.index])
+
+        if dist.get_rank() == 0:
+            self.rollout_engine.continue_generation()
 
         dist.barrier(device_ids=[self.device.index])
         current_platform.synchronize()

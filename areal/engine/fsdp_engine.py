@@ -22,7 +22,13 @@ from torch.distributed.checkpoint.state_dict import (
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import CPUOffloadPolicy
 from torch.distributed.tensor import DTensor
-from transformers import PreTrainedTokenizerFast, ProcessorMixin
+from transformers import (
+    PreTrainedTokenizerFast,
+    ProcessorMixin,
+    get_constant_schedule_with_warmup,
+    get_cosine_schedule_with_warmup,
+    get_linear_schedule_with_warmup,
+)
 
 from areal.api.alloc_mode import FSDPParallelStrategy, ParallelStrategy
 from areal.api.cli_args import TrainEngineConfig
@@ -41,6 +47,7 @@ from areal.utils.data import (
 from areal.utils.distributed import init_custom_process_group
 from areal.utils.fsdp import fsdp2_load_full_state_dict
 from areal.utils.fsdp.grad import fsdp2_clip_grad_norm
+from areal.utils.fsdp.optimizer import AnyPrecisionAdamW
 from areal.utils.fsdp.parallel import ParallelHelper, parallelize_model
 from areal.utils.nccl import NCCL_DEFAULT_TIMEOUT
 from areal.utils.save_load import get_state_dict_from_repo_id_or_path
@@ -349,6 +356,11 @@ class FSDPEngine(BaseHFEngine):
     def _update_weights_from_distributed(self, meta: WeightUpdateMeta):
         """Broadcast parameters (chunked) from rank 0 (FSDP2 compatible)."""
 
+        if dist.get_rank() == 0:
+            self.rollout_engine.pause_generation()
+
+        dist.barrier(device_ids=[self.device.index])
+
         weight_chunked_mem_size = meta.weight_chunked_mem_mb * 1024 * 1024
 
         buffer_size = 0
@@ -376,6 +388,11 @@ class FSDPEngine(BaseHFEngine):
         # Only rank-0 CAN contain named tensors here
         if named_tensors:
             self._update_bucket_weights_from_distributed(meta, named_tensors)
+
+        dist.barrier(device_ids=[self.device.index])
+
+        if dist.get_rank() == 0:
+            self.rollout_engine.continue_generation()
 
         dist.barrier(device_ids=[self.device.index])
         current_platform.synchronize()
@@ -715,3 +732,77 @@ class FSDPEngine(BaseHFEngine):
         unpacked = unpack_sequence(res, lens=output_seqlens, dim=0)
         reordered = reorder_list(unpacked, mb_list.backward_indices)
         return pad_and_stack_tensors_along_first_dim(reordered)
+
+    def create_optimizer(self, ft_spec: FinetuneSpec):
+        if self.optimizer_config is None:
+            return
+        assert self.model is not None
+        # Set up optimizer
+        tik = time.perf_counter()
+        assert self.optimizer_config.type in [
+            "adam",
+            "adam_bf16",
+            "sgd",
+        ], "Only adam/adam_bf16/sgd optimizer is supported in this engine."
+        if self.optimizer_config.type in ["sgd", "adam_bf16"]:
+            self.logger.warning(
+                f"Using the '{self.optimizer_config.type}' optimizer with FSDP may be less stable. Consider using the 'adam' (AdamW) optimizer for improved stability and performance."
+            )
+        lr = self.optimizer_config.lr
+        weight_decay = self.optimizer_config.weight_decay
+        beta1 = self.optimizer_config.beta1
+        beta2 = self.optimizer_config.beta2
+        eps = self.optimizer_config.eps
+        if self.optimizer_config.type == "adam":
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=(beta1, beta2),
+                eps=eps,
+                fused=True,
+            )
+        elif self.optimizer_config.type == "adam_bf16":
+            self.optimizer = AnyPrecisionAdamW(
+                self.model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+                betas=(beta1, beta2),
+                eps=eps,
+                momentum_dtype="bfloat16",
+                variance_dtype="bfloat16",
+            )
+        else:
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+            )
+        total_train_steps = ft_spec.total_train_steps
+        num_warmup_steps = int(
+            self.optimizer_config.warmup_steps_proportion * total_train_steps
+        )
+
+        if self.optimizer_config.lr_scheduler_type == "cosine":
+            self.lr_scheduler = get_cosine_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps,
+                total_train_steps,
+                min_lr_ratio=self.optimizer_config.min_lr_ratio,
+            )
+        elif self.optimizer_config.lr_scheduler_type == "linear":
+            self.lr_scheduler = get_linear_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps,
+                total_train_steps,
+            )
+        elif self.optimizer_config.lr_scheduler_type == "constant":
+            self.lr_scheduler = get_constant_schedule_with_warmup(
+                self.optimizer,
+                num_warmup_steps,
+            )
+        else:
+            raise ValueError(
+                f"Unknown lr scheduler type {self.optimizer_config.lr_scheduler_type}"
+            )
+        self.logger.info(f"Create optimizer time: {time.perf_counter() - tik}")
