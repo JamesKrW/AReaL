@@ -10,7 +10,7 @@ pip install flashinfer-python==0.3.1 --no-build-isolation
 pip install "sglang[all]>=0.5.2" 
 pip install megatron-core==0.13.1 nvidia-ml-py
 pip install "flash-attn==2.8.3" --no-build-isolation
-pip install vllm==0.10.1
+#pip install vllm==0.10.1
 # Megatron & other GPU tools
 
 
