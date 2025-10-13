@@ -125,9 +125,9 @@ saver:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  freq_epochs: 1
-  freq_steps: null
-  freq_secs: 18000
+  freq_epochs: null
+  freq_steps: 10
+  freq_secs: null
 
 recover:
   mode: disabled
@@ -143,8 +143,8 @@ evaluator:
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
   freq_epochs: null
-  freq_steps: null
-  freq_secs: 18000
+  freq_steps: 10
+  freq_secs: null
 
 stats_logger:
   experiment_name: ${experiment_name}
