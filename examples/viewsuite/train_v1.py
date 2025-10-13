@@ -28,12 +28,10 @@ from areal.utils.data import (
 )
 from areal.utils.device import log_gpu_stats
 from areal.utils.evaluator import Evaluator
+from areal.utils.hf_utils import load_hf_processor_and_tokenizer
 from areal.utils.recover import RecoverHandler
 from areal.utils.saver import Saver
 from areal.utils.stats_logger import StatsLogger
-from realhf.api.core.data_api import load_hf_processor_and_tokenizer
-from realhf.base import seeding as realhf_seeding  # avoid name collision
-from realhf.base import stats_tracker as realhf_stats_tracker  # alias not used but kept for compat
 
 from dataset import build_env_dataset
 from agent_args import AgentGRPOConfig
@@ -272,8 +270,11 @@ def main(args):
     eval_rollout.config.max_head_offpolicyness = int(1e12)
     eval_rollout.initialize()
 
-    # Initialize actor and (optional) ref
+    weight_update_meta = WeightUpdateMeta.from_fsdp_xccl(allocation_mode)
+
     actor.initialize(None, ft_spec)
+    actor.connect_engine(rollout, weight_update_meta)
+
     ref = None
     if config.actor.kl_ctl > 0 and config.ref is not None:
         ref = FSDPPPOActor(config=config.ref)
@@ -281,13 +282,6 @@ def main(args):
         ref.initialize(None, ft_spec)
 
     # NCCL/XCCL weight update meta (broadcast rank-0 info to all ranks)
-    weight_update_meta = [
-        WeightUpdateMeta.from_fsdp_xccl(
-            AllocationMode.from_str(config.allocation_mode), actor
-        )
-    ]
-    dist.broadcast_object_list(weight_update_meta, src=0)
-    weight_update_meta = weight_update_meta[0]
 
     # Build workflows (train / eval)
     if tokenizer.pad_token_id not in config.gconfig.stop_token_ids:
@@ -461,13 +455,7 @@ def main(args):
 
         # ---------- Update weights ----------
         with stats_tracker.record_timing("update_weights"):
-            if dist.get_rank() == 0:
-                future = rollout.update_weights(weight_update_meta)
-            actor.upload_weights(weight_update_meta)
-            if dist.get_rank() == 0:
-                future.result()
-            dist.barrier(device_ids=[actor.device.index])
-            current_platform.synchronize()
+            actor.update_weights(weight_update_meta)
 
             actor.set_version(global_step + 1)
             rollout.set_version(global_step + 1)
