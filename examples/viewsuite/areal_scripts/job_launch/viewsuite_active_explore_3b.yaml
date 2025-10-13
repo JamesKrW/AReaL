@@ -100,7 +100,7 @@ sglang:
   dtype: ${actor.dtype}
   max_running_requests: 64
   context_length: 32768
-  mem_fraction_static: 0.6
+  mem_fraction_static: 0.4
   enable_multimodal: true
 
 # datasets
@@ -127,7 +127,7 @@ saver:
   fileroot: ${cluster.fileroot}
   freq_epochs: 1
   freq_steps: null
-  freq_secs: 7200
+  freq_secs: 18000
 
 recover:
   mode: disabled
@@ -142,9 +142,9 @@ evaluator:
   experiment_name: ${experiment_name}
   trial_name: ${trial_name}
   fileroot: ${cluster.fileroot}
-  freq_epochs: 1
+  freq_epochs: null
   freq_steps: null
-  freq_secs: null
+  freq_secs: 18000
 
 stats_logger:
   experiment_name: ${experiment_name}
@@ -154,10 +154,10 @@ stats_logger:
     mode: online
 
 launcher:
-  inference_server_cpus_per_gpu: 4
-  inference_server_mem_per_gpu: 32768
-  trainer_cpus_per_gpu: 4
-  trainer_mem_per_gpu: 32768
+  inference_server_cpus_per_gpu: 8
+  inference_server_mem_per_gpu: 102400
+  trainer_cpus_per_gpu: 8
+  trainer_mem_per_gpu: 102400
 
 # forward 0, inverse 1, active_explore 2
 envs:
