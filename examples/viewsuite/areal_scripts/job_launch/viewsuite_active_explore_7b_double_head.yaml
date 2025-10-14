@@ -14,7 +14,7 @@ cluster:
     type: nfs
     nfs_record_root: ${fileroot}/name_resolve
 
-allocation_mode: d2c4
+allocation_mode: d4t2
 
 rollout:
   experiment_name: ${experiment_name}
