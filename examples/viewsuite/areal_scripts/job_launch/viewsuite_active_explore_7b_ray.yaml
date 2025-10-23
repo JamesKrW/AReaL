@@ -1,0 +1,269 @@
+experiment_name: areal
+trial_name: viewsuite_active_explore_7b-train-02
+fileroot: /blob/v-kangwang/viewsuite #/home/aiscuser/projects
+seed: 1
+total_train_epochs: 10
+tokenizer_path: ${actor.path}
+async_training: true
+eval_first: false
+cluster:
+  n_nodes: 2
+  n_gpus_per_node: 8
+  fileroot: ${fileroot}/experiments
+  name_resolve:
+    type: ray
+    nfs_record_root: ${fileroot}/name_resolve
+
+allocation_mode: sglang.d8+d2c4
+
+rollout:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  max_concurrent_rollouts: 64
+  queue_size: 4096
+  consumer_batch_size: ${train_dataset.batch_size}
+  max_head_offpolicyness: 4
+  enable_rollout_tracing: false
+
+gconfig:
+  n_samples: 4
+  min_new_tokens: 0
+  max_new_tokens: 512
+  greedy: false
+  temperature: 1.0
+
+gconfig_eval:
+  n_samples: 1
+  min_new_tokens: ${gconfig.min_new_tokens}
+  max_new_tokens: ${gconfig.max_new_tokens}
+  greedy: ${gconfig.greedy}
+  temperature: ${gconfig.temperature}
+
+actor:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: Qwen/Qwen2.5-VL-7B-Instruct
+  init_from_scratch: false
+  disable_dropout: true
+  gradient_checkpointing: true
+  dtype: bfloat16
+  mb_spec:
+    max_tokens_per_mb: 25000
+  optimizer:
+    type: adam
+    lr: 2e-6
+    weight_decay: 0.01
+    beta1: 0.9
+    beta2: 0.999
+    eps: 1e-8
+    lr_scheduler_type: constant
+    gradient_clipping: 1.0
+    warmup_steps_proportion: 0.001
+  backend: fsdp
+  group_size: ${gconfig.n_samples}
+  eps_clip: 0.4
+  temperature: ${gconfig.temperature}
+  reward_scaling: 10.0
+  reward_bias: -0.5
+  kl_ctl: 0.0
+  ppo_n_minibatches: 1
+  recompute_logprob: true
+  use_decoupled_loss: true
+  behav_imp_weight_cap: 5.0
+  dynamic_sampling: false
+  reward_norm:
+    mean_level: group
+    std_level: group
+    group_size: ${gconfig.n_samples}
+  adv_norm:
+    mean_level: batch
+    std_level: batch
+  max_new_tokens: ${gconfig.max_new_tokens}
+
+ref:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  path: ${actor.path}
+  init_from_scratch: false
+  disable_dropout: true
+  dtype: ${actor.dtype}
+  mb_spec:
+    max_tokens_per_mb: 32768
+  optimizer: null
+  backend: fsdp
+
+# SGLang
+sglang:
+  model_path: ${actor.path}
+  random_seed: ${seed}
+  skip_tokenizer_init: true
+  dtype: ${actor.dtype}
+  max_running_requests: 64
+  context_length: 32768
+  mem_fraction_static: 0.6
+  enable_multimodal: true
+
+# datasets
+train_dataset:
+  batch_size: 4
+  shuffle: true
+  pin_memory: true
+  num_workers: 1
+  path: openai/gsm8k
+  type: rl
+
+valid_dataset:
+  batch_size: ${train_dataset.batch_size}
+  shuffle: true
+  pin_memory: true
+  num_workers: 1
+  path: openai/gsm8k
+  type: rl
+
+# Utilities
+saver:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 80
+  freq_secs: null
+
+recover:
+  mode: auto
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 40
+  freq_secs: null
+
+evaluator:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  freq_epochs: null
+  freq_steps: 80
+  freq_secs: null
+
+stats_logger:
+  experiment_name: ${experiment_name}
+  trial_name: ${trial_name}
+  fileroot: ${cluster.fileroot}
+  wandb:
+    mode: online
+
+launcher:
+  inference_server_cpus_per_gpu: 4
+  inference_server_mem_per_gpu: 32768
+  trainer_cpus_per_gpu: 4
+  trainer_mem_per_gpu: 32768
+
+# forward 0, inverse 1, active_explore 2
+envs:
+  - name: GymProxyTool
+    n_envs: 2230 #4460
+    tag_id: 2
+    seed: [1,2231,1]
+    split: train
+    max_turns: 10
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/scannet_proxy_task_train/active_explore_qa.jsonl
+      max_turns: ${envs[0].max_turns}
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
+
+  - name: GymProxyTool
+    n_envs: 2230 #4460
+    tag_id: 2
+    seed: [2231,4461,1]
+    split: train
+    max_turns: 10
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/scannet_proxy_task_train/active_explore_qa.jsonl
+      max_turns: ${envs[0].max_turns}
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
+
+  - name: GymProxyNoTool
+    n_envs: 32 #560
+    tag_id: 0
+    seed: [1,561,1]
+    split: valid
+    max_turns: 1
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/scannet_proxy_task_dev/forward_dynamics_qa.jsonl
+
+  - name: GymProxyNoTool
+    n_envs: 32 #560
+    tag_id: 1
+    seed: [1,561,1]
+    split: valid
+    max_turns: 1
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/scannet_proxy_task_dev/inverse_dynamics_qa.jsonl
+
+  - name: GymProxyTool
+    n_envs: 50 #560
+    tag_id: 2
+    seed: [1,561,1]
+    split: valid
+    max_turns: 10
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/scannet_proxy_task_train/active_explore_qa.jsonl
+      max_turns: ${envs[0].max_turns}
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
+
+  - name: ViewSpatialNoToolGym
+    n_envs: 32
+    split: valid
+    tag_id: 3
+    seed: [0,318,1]
+    max_turns: 1
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/viewspatial_scannet_out/dataset_test.jsonl
+      resize: [300,300]
+
+  - name: ViewSpatialToolGym
+    n_envs: 32
+    split: valid
+    tag_id: 4
+    seed: [0,318,1]
+    max_turns: 10
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/viewspatial_scannet_out/dataset_test.jsonl
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
+      resize: [300,300]
+
+  - name: VSIBenchNoToolGym
+    n_envs: 32
+    split: valid
+    tag_id: 5
+    seed: [0,2071,1]
+    max_turns: 1
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/vsi_bench/vsi_bench.jsonl
+      camposes_dir: ${oc.env:HOME}/projects/data/vsi_bench/camposes
+      video_dir: ${oc.env:HOME}/projects/data/vsi_bench/vsi_bench_video
+      sample_frames: 32
+      resize: [300,300]
+    
+  - name: VSIBenchToolGym
+    n_envs: 32
+    split: valid
+    tag_id: 6
+    seed: [0,2071,1]
+    max_turns: 10
+    config:
+      jsonl_path: ${oc.env:HOME}/projects/data/vsi_bench/vsi_bench.jsonl
+      camposes_dir: ${oc.env:HOME}/projects/data/vsi_bench/camposes
+      video_dir: ${oc.env:HOME}/projects/data/vsi_bench/vsi_bench_video
+      render_backend: client
+      client_url: ws://165.124.184.151:8766/render
+      max_turns: 10
+      sample_frames: 32
+      view_interval: 8
+      resize: [300,300]
+
