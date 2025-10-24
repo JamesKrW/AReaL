@@ -9,6 +9,11 @@ from copy import deepcopy
 from typing import Dict, Any
 
 import torch
+from datetime import timedelta
+from areal.utils.nccl import NCCL_DEFAULT_TIMEOUT
+from torch.distributed.distributed_c10d import _set_default_timeout  # private API
+
+_set_default_timeout(NCCL_DEFAULT_TIMEOUT)
 import torch.distributed as dist
 
 from areal.api.alloc_mode import AllocationMode
