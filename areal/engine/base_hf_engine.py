@@ -40,7 +40,7 @@ from areal.utils.model import (
     is_qwen3_moe_model,
     is_valid_vision_model,
 )
-from areal.utils.nccl import NCCL_DEFAULT_TIMEOUT
+from areal.utils.nccl import NCCL_DEFAULT_TIMEOUT, NCCL_NEW_GROUP_DEFAULT_TIMEOUT
 
 
 class BaseHFEngine(TrainEngine):
@@ -123,7 +123,7 @@ class BaseHFEngine(TrainEngine):
             )
             self.own_global_group = True
         # Each process is its own model parallel group.
-        mp_group = dist.new_group([dist.get_rank()])
+        mp_group = dist.new_group([dist.get_rank()],timeout=NCCL_NEW_GROUP_DEFAULT_TIMEOUT)
         assert mp_group is not None
         self.mp_group = mp_group
 
