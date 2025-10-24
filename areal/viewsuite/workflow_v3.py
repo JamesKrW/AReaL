@@ -1,11 +1,6 @@
 # vision_multi_turn_agent_env_workflow.py (async GymImageEnv version; VLM+LLM compatible)
-import asyncio
-import os
-import uuid
+import asyncio, os, uuid, colorama, torch
 from typing import Any, Dict, List, Tuple, Optional
-
-import colorama
-import torch
 from PIL import Image
 from transformers import AutoProcessor, PreTrainedTokenizerFast
 
@@ -19,67 +14,43 @@ from areal.utils.image import image2base64
 from realhf.base import logging
 from view_suite.gym.gym_image_env import GymImageEnv
 from areal.viewsuite.registry import REGISTERED_ENVS
-import traceback
+
 logger = logging.getLogger("Vision Multi-Turn AgentEnv workflow")
 
 
 # ---------------------- Helpers ----------------------
-
 def _is_vlm_processor(proc: Optional[AutoProcessor]) -> bool:
-    """Heuristically determine if `proc` can handle images."""
-    if proc is None:
-        return False
-    return hasattr(proc, "image_processor")
+    return proc is not None and hasattr(proc, "image_processor")
 
-def convert_placeholder_to_image_token(
-    text_content: str,
-    image_placeholder: str,
-    processor: Optional[AutoProcessor],
-    for_vlm: bool,
-) -> str:
+def convert_placeholder_to_image_token(txt: str, placeholder: str, processor: Optional[AutoProcessor], vlm: bool) -> str:
     """
-    Replace <image> placeholder based on whether we're running a VLM turn.
-    - If VLM (images present & processor is vision-capable):
-        - Qwen-style: <|vision_start|><|image_pad|><|vision_end|>
-        - Else: processor.image_token if available else "<image>"
-    - If LLM/text-only turn: normalize to harmless marker.
+    Replace <image> placeholder for VLM turns; use a harmless marker for text-only turns.
     """
-    if for_vlm and _is_vlm_processor(processor):
+    if vlm and _is_vlm_processor(processor):
         iproc = getattr(processor, "image_processor", None)
-        if iproc and getattr(iproc, "image_processor_type", "").lower().find("qwen") >= 0:
-            image_token = "<|vision_start|><|image_pad|><|vision_end|>"
-        else:
-            image_token = getattr(processor, "image_token", "<image>")
+        tok = "<|vision_start|><|image_pad|><|vision_end|>" if (iproc and str(getattr(iproc, "image_processor_type", "")).lower().find("qwen") >= 0) else getattr(processor, "image_token", "<image>")
     else:
-        image_token = "[image]"
-    return text_content.replace(image_placeholder, image_token)
+        tok = "[image]"
+    return txt.replace(placeholder, tok)
 
-def get_images_from_multi_modal_input(
-    multi_modal_input: Optional[Dict[str, Any]],
-    image_placeholder: str = "<image>",
-) -> List[Image.Image]:
-    """Extract PIL images from obs['multi_modal_input'][image_placeholder]."""
+def get_images_from_multi_modal_input(multi_modal_input: Optional[Dict[str, Any]], placeholder: str = "<image>") -> List[Image.Image]:
+    """
+    Extract PIL images from multi_modal_input[placeholder].
+    """
     if not multi_modal_input:
         return []
-    image_list = multi_modal_input.get(image_placeholder, [])
-    images: List[Image.Image] = []
-    for img in image_list:
-        if isinstance(img, Image.Image):
-            images.append(img)
-        else:
-            images.append(convert_image(img))
-    return images
+    imgs = multi_modal_input.get(placeholder, [])
+    return [img if isinstance(img, Image.Image) else convert_image(img) for img in imgs]
 
 def _extract_success_flag(info: Optional[Dict[str, Any]]) -> float:
-    """Best-effort extraction of a boolean success indicator."""
+    """
+    Best-effort extraction of a boolean success indicator.
+    """
     if not info:
         return 0.0
-    for key in ("success", "is_success", "solved"):
-        if key in info:
-            try:
-                return 1.0 if bool(info[key]) else 0.0
-            except Exception:
-                continue
+    for k in ("success", "is_success", "solved"):
+        if k in info:
+            return 1.0 if bool(info[k]) else 0.0
     return 0.0
 
 
@@ -90,325 +61,235 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
     - Else -> LLM path (tokenizer only)
     """
 
-    def __init__(
-        self,
-        gconfig: GenerationHyperparameters,
-        tokenizer: PreTrainedTokenizerFast,
-        processor: Optional[AutoProcessor] = None,
-        image_placeholder: str = "<image>",
-        dump_dir: Optional[str] = None,
-    ):
-        self.gconfig = gconfig
-        self.tokenizer = tokenizer
-        self.processor = processor
-        self.image_placeholder = image_placeholder
-        self.dump_dir = dump_dir
-        if self.dump_dir is not None and not os.path.exists(self.dump_dir):
+    def __init__(self,
+                 gconfig: GenerationHyperparameters,
+                 tokenizer: PreTrainedTokenizerFast,
+                 processor: Optional[AutoProcessor] = None,
+                 image_placeholder: str = "<image>",
+                 dump_dir: Optional[str] = None):
+        self.gconfig, self.tokenizer, self.processor = gconfig, tokenizer, processor
+        self.image_placeholder, self.dump_dir = image_placeholder, dump_dir
+        if self.dump_dir and not os.path.exists(self.dump_dir):
             os.makedirs(self.dump_dir, exist_ok=True)
 
-    def _robust_image_token_id(self) -> Optional[int]:
-        """Best-effort retrieval of image token id for Qwen-like VLMs."""
-        tok_id = None
-        if self.processor is not None:
-            tok_id = getattr(self.processor, "image_token_id", None) \
-                     or getattr(self.processor, "image_pad_token_id", None)
-        if tok_id is None:
-            try:
-                tok_id = self.tokenizer.convert_tokens_to_ids("<|image_pad|>")
-                if isinstance(tok_id, list):
-                    tok_id = tok_id[0]
-            except Exception:
-                tok_id = None
-        return tok_id
+    # ---------------------- Final (single-point) validation ----------------------
+    def _final_validate(self, res: Dict[str, Any]) -> None:
+        """
+        Single, unified validation invoked right before returning:
+        - If multi_modal_input exists:
+            * Assert #<image_pad> == pixel_features / merge_size^2
+            * For each [vision_start..vision_end) in the masked region, assert it contains at least one <image_pad>
+        - Else: assert no <image_pad> appears in the masked region
+        """
+        input_ids = res["input_ids"][0]
+        attention_mask = res["attention_mask"][0]
 
-    def _merge_size(self) -> int:
-        """Fetch spatial merge size from the processor if available, else 1."""
-        if self.processor is not None and getattr(self.processor, "image_processor", None) is not None:
-            return int(getattr(self.processor.image_processor, "merge_size", 1))
-        return 1
+        image_pad_id = int(getattr(self.processor, "image_token_id")) if (self.processor is not None and hasattr(self.processor, "image_token_id")) else int(self.tokenizer.convert_tokens_to_ids("<|image_pad|>"))
+        vision_start_id = int(self.tokenizer.convert_tokens_to_ids("<|vision_start|>"))
+        vision_end_id = int(self.tokenizer.convert_tokens_to_ids("<|vision_end|>"))
 
-    async def _run_one_episode(
-        self, engine: InferenceEngine, data: dict, rid: str
-    ) -> Tuple[Dict[str, Any], str, float, int]:
-        seed = data["seed"]
-        max_turns = data.get("max_turns", 1)
+        if "multi_modal_input" in res:
+            multi_modal_input = res["multi_modal_input"][0]
+            assert "pixel_values" in multi_modal_input, "pixel_values missing in multi_modal_input"
+
+            merge_size = int(self.processor.image_processor.merge_size) if (self.processor is not None and hasattr(self.processor, "image_processor")) else 1
+            num_image_pad = int((input_ids == image_pad_id).sum().item())
+            num_pixel_features = int(multi_modal_input["pixel_values"].shape[0] // (merge_size ** 2))
+            if num_image_pad != num_pixel_features:
+                logger.error(f"Final validation: #<image_pad>({num_image_pad}) != #features/merge^2({num_pixel_features})")
+                assert False, "image_pad count mismatch"
+
+            # Structure check across the masked region.
+            seq = [int(t) for t, m in zip(input_ids.tolist(), attention_mask.tolist()) if m == 1]
+            i = 0
+            while True:
+                try:
+                    s = seq.index(vision_start_id, i)
+                except ValueError:
+                    break
+                try:
+                    e = seq.index(vision_end_id, s + 1)
+                except ValueError:
+                    logger.error(f"Final validation: vision_start at {s} has no closing vision_end")
+                    assert False, "vision segment not closed"
+                if image_pad_id not in seq[s + 1:e]:
+                    logger.error(f"Final validation: no <image_pad> between start={s} and end={e}")
+                    assert False, "vision segment missing image_pad"
+                i = e + 1
+        else:
+            if int((input_ids == image_pad_id).sum().item()) != 0:
+                logger.error("Final validation: <image_pad> appears but multi_modal_input is missing")
+                assert False, "image_pad present without multi_modal_input"
+
+    # ---------------------- Episode ----------------------
+    async def _run_one_episode(self, engine: InferenceEngine, data: dict, rid: str) -> Tuple[Dict[str, Any], str, float, int]:
+        seed, max_turns = data["seed"], data.get("max_turns", 1)
         env: GymImageEnv = REGISTERED_ENVS[data["name"]](data["config"])
 
-        try:
-            # ===== Init =====
-            init_obs, _ = await env.reset(seed=seed)
-            sys_prompt = await env.system_prompt()
+        init_obs, _ = await env.reset(seed=seed)
+        sys_prompt = await env.system_prompt()
 
-            all_images: List[Image.Image] = []
+        all_images: List[Image.Image] = []
+        input_ids: List[int] = []
+        logprobs: List[float] = []
+        loss_mask: List[int] = []
+        versions: List[int] = []
+        cumulative_reward = 0.0
+        t = 0
+        last_info: Dict[str, Any] = {}
+        pixel_values_segs: List[torch.Tensor] = []
+        image_grid_thw_segs: List[torch.Tensor] = []
 
-            # Rollout accumulators
-            input_ids: List[int] = []
-            logprobs: List[float] = []
-            loss_mask: List[int] = []
-            versions: List[int] = []
-            cumulative_reward = 0.0
-            t = 0
-            last_info: Dict[str, Any] = {}
+        # ----- Seed turn -----
+        new_images = get_images_from_multi_modal_input(init_obs.get("multi_modal_input"), self.image_placeholder)
+        is_vlm_turn = len(new_images) > 0 and _is_vlm_processor(self.processor)
+        messages = [
+            {"role": "system", "content": convert_placeholder_to_image_token(sys_prompt["obs_str"], self.image_placeholder, self.processor, is_vlm_turn)},
+            {"role": "user", "content": convert_placeholder_to_image_token(init_obs["obs_str"], self.image_placeholder, self.processor, is_vlm_turn)},
+        ]
+        if is_vlm_turn:
+            text = self.tokenizer.apply_chat_template(conversation=messages, tokenize=False, add_generation_prompt=True)
+            processed = self.processor(images=new_images, text=text, padding=False, return_tensors="pt")
+            seq = processed["input_ids"].tolist()[0]
+            input_ids += seq
+            logprobs += [0.0] * len(seq)
+            loss_mask += [0] * len(seq)
+            versions += [-1] * len(seq)
+            if new_images:
+                pixel_values_segs.append(processed["pixel_values"])
+                if "image_grid_thw" in processed:
+                    image_grid_thw_segs.append(processed["image_grid_thw"])
+                all_images += new_images
+        else:
+            text = self.tokenizer.apply_chat_template(conversation=messages, tokenize=False, add_generation_prompt=True)
+            seq = self.tokenizer(text, return_tensors="pt")["input_ids"][0].tolist()
+            input_ids += seq
+            logprobs += [0.0] * len(seq)
+            loss_mask += [0] * len(seq)
+            versions += [-1] * len(seq)
 
-            # Visual feature segments per user turn (only NEW images each time)
-            pv_segs: List[torch.Tensor] = []
-            thw_segs: List[torch.Tensor] = []
-
-            # ----- Seed conversation with system + initial user -----
-            new_images = get_images_from_multi_modal_input(
-                init_obs.get("multi_modal_input"), self.image_placeholder
+        # ----- Turns loop -----
+        while t < max_turns:
+            req = ModelRequest(
+                rid=rid,
+                input_ids=input_ids,
+                image_data=image2base64(all_images) if all_images else [],
+                gconfig=self.gconfig.new(n_samples=1),
+                tokenizer=self.tokenizer,
+                processor=self.processor,
             )
-            for_vlm_turn = len(new_images) > 0 and _is_vlm_processor(self.processor)
+            resp = await engine.agenerate(req)
 
-            new_messages = [
-                {
-                    "role": "system",
-                    "content": convert_placeholder_to_image_token(
-                        sys_prompt["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": convert_placeholder_to_image_token(
-                        init_obs["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
-                    ),
-                },
-            ]
+            input_ids += resp.output_tokens
+            logprobs += resp.output_logprobs
+            loss_mask += [1] * len(resp.output_tokens)
+            versions += resp.output_versions
 
-            # Build prompt encoding for the seed messages
-            if for_vlm_turn:
-                
-                text_for_proc = self.tokenizer.apply_chat_template(
-                    conversation=new_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-                
-                processed_input = self.processor(
-                    images=new_images if new_images else None,
-                    text=text_for_proc,
-                    padding=False,
-                    return_tensors="pt",
-                )
-                cur_input_ids = processed_input["input_ids"].tolist()[0]
-                input_ids.extend(cur_input_ids)
-                logprobs.extend([0.0] * len(cur_input_ids))
-                loss_mask.extend([0] * len(cur_input_ids))
-                versions.extend([-1] * len(cur_input_ids))
+            eos_id = self.tokenizer.eos_token_id
+            if eos_id is not None and (len(resp.output_tokens) == 0 or input_ids[-1] != eos_id):
+                input_ids.append(eos_id)
+                logprobs.append(0.0)
+                loss_mask.append(0)
+                versions.append(-1)
 
-                if new_images:
-                    pv = processed_input["pixel_values"]
-                    thw = processed_input.get("image_grid_thw", None)
-                    pv_segs.append(pv)
-                    if thw is not None:
-                        thw_segs.append(thw)
-                    all_images.extend(new_images)
+            assistant_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True).strip()
+            next_obs, r, done, info = await env.step(assistant_text)
+            cumulative_reward += float(r)
+            last_info = info or {}
+            if done or (t + 1) >= max_turns:
+                break
+
+            next_images = get_images_from_multi_modal_input(next_obs.get("multi_modal_input"), self.image_placeholder)
+            is_vlm_turn = len(next_images) > 0 and _is_vlm_processor(self.processor)
+
+            fixed = {"role": "assistant", "content": "__PREFIX__"}
+            user = {"role": "user", "content": convert_placeholder_to_image_token(next_obs["obs_str"], self.image_placeholder, self.processor, is_vlm_turn)}
+
+            if is_vlm_turn:
+                # processor -> processor delta alignment to avoid cutting visual tokens
+                s1_text = self.tokenizer.apply_chat_template(conversation=[fixed], tokenize=False, add_generation_prompt=False)
+                s1_proc = self.processor(images=None, text=s1_text, padding=False, return_tensors="pt")
+                fixed_len = int(s1_proc["input_ids"].shape[-1])
+
+                s2_text = self.tokenizer.apply_chat_template(conversation=[fixed, user], tokenize=False, add_generation_prompt=True)
+                s2_proc = self.processor(images=next_images, text=s2_text, padding=False, return_tensors="pt")
+
+                full = s2_proc["input_ids"][0].tolist()
+                delta = full[fixed_len:]
+
+                input_ids += delta
+                logprobs += [0.0] * len(delta)
+                loss_mask += [0] * len(delta)
+                versions += [-1] * len(delta)
+                if next_images:
+                    pixel_values_segs.append(s2_proc["pixel_values"])
+                    if "image_grid_thw" in s2_proc:
+                        image_grid_thw_segs.append(s2_proc["image_grid_thw"])
+                    all_images += next_images
             else:
-                # LLM path: text-only
-                
-                new_text = self.tokenizer.apply_chat_template(
-                    conversation=new_messages,
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-               
-                cur_input_ids = self.tokenizer(new_text, return_tensors="pt")["input_ids"][0].tolist()
-                input_ids.extend(cur_input_ids)
-                logprobs.extend([0.0] * len(cur_input_ids))
-                loss_mask.extend([0] * len(cur_input_ids))
-                versions.extend([-1] * len(cur_input_ids))
+                # tokenizer -> tokenizer delta alignment
+                s1 = self.tokenizer.apply_chat_template(conversation=[fixed], tokenize=True, add_generation_prompt=False)
+                s2 = self.tokenizer.apply_chat_template(conversation=[fixed, user], tokenize=True, add_generation_prompt=True)
+                s1_ids = s1.tolist() if hasattr(s1, "tolist") else list(s1)
+                s2_ids = s2.tolist() if hasattr(s2, "tolist") else list(s2)
+                delta = s2_ids[len(s1_ids):]
+                input_ids += delta
+                logprobs += [0.0] * len(delta)
+                loss_mask += [0] * len(delta)
+                versions += [-1] * len(delta)
 
-            # Fixed assistant message to measure prefix length for slicing the next user delta.
-            fixed_message = {"role": "assistant", "content": "__PREFIX__"}
-            
-            fixed_token_ids = self.tokenizer.apply_chat_template(
-                conversation=[fixed_message],
-                tokenize=True,
-                add_generation_prompt=False,
-            )
-            
-            fixed_token_id_len = len(fixed_token_ids.tolist() if hasattr(fixed_token_ids, "tolist") else list(fixed_token_ids))
+            t += 1
 
-            # ===== Main loop =====
-            while t < max_turns:
-                img_b64 = image2base64(all_images) if all_images else []
+        # ----- Pack -----
+        length = len(input_ids)
+        result: Dict[str, Any] = {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0),
+            "attention_mask": torch.ones(1, length, dtype=torch.long),
+            "loss_mask": torch.tensor(loss_mask, dtype=torch.long).unsqueeze(0),
+            "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
+            "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
+            "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
+            "success": torch.tensor(_extract_success_flag(last_info), dtype=torch.float32).unsqueeze(0),
+            "tag_id": torch.tensor([int(data.get("tag_id", -1))], dtype=torch.long),
+        }
+        multi_modal_input_dict: Dict[str, torch.Tensor] = {}
+        if pixel_values_segs:
+            multi_modal_input_dict["pixel_values"] = torch.cat(pixel_values_segs, dim=0)
+        if image_grid_thw_segs:
+            multi_modal_input_dict["image_grid_thw"] = torch.cat(image_grid_thw_segs, dim=0)
+        if multi_modal_input_dict:
+            result["multi_modal_input"] = [multi_modal_input_dict]
 
-                req = ModelRequest(
-                    rid=rid,
-                    input_ids=input_ids,
-                    image_data=img_b64,
-                    gconfig=self.gconfig.new(n_samples=1),
-                    tokenizer=self.tokenizer,
-                    processor=self.processor,
-                )
-                resp = await engine.agenerate(req)
+        # ----- Final validation (log + assert). No try/except here. -----
+        self._final_validate(result)
 
-                # Append assistant output (trainable region)
-                input_ids += resp.output_tokens
-                logprobs += resp.output_logprobs
-                loss_mask += [1] * len(resp.output_tokens)
-                versions += resp.output_versions
-
-                # Ensure EOS
-                eos_id = self.tokenizer.eos_token_id
-                if eos_id is not None and (len(resp.output_tokens) == 0 or input_ids[-1] != eos_id):
-                    input_ids.append(eos_id)
-                    logprobs.append(0.0)
-                    loss_mask.append(0)
-                    versions.append(-1)
-
-                # Step env (ASYNC)
-                assistant_text = self.tokenizer.decode(resp.output_tokens, skip_special_tokens=True).strip()
-                next_obs, r, done, info = await env.step(assistant_text)
-                cumulative_reward += float(r)
-                last_info = info or {}
-                if done or (t + 1) >= max_turns:
-                    break
-
-                # Build next user delta
-                next_images = get_images_from_multi_modal_input(
-                    next_obs.get("multi_modal_input"), self.image_placeholder
-                )
-                for_vlm_turn = len(next_images) > 0 and _is_vlm_processor(self.processor)
-
-                new_messages = [
-                    fixed_message,
-                    {
-                        "role": "user",
-                        "content": convert_placeholder_to_image_token(
-                            next_obs["obs_str"], self.image_placeholder, self.processor, for_vlm_turn
-                        ),
-                    },
-                ]
-
-                if for_vlm_turn:
-                    
-                    text_for_proc = self.tokenizer.apply_chat_template(
-                        conversation=new_messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-                   
-                    processed_input = self.processor(
-                        images=next_images if next_images else None,
-                        text=text_for_proc,
-                        padding=False,
-                        return_tensors="pt",
-                    )
-                    cur_ids_full = processed_input["input_ids"].tolist()[0]
-                    cur_input_ids = cur_ids_full[fixed_token_id_len:]
-
-                    input_ids += cur_input_ids
-                    logprobs += [0.0] * len(cur_input_ids)
-                    loss_mask += [0] * len(cur_input_ids)
-                    versions += [-1] * len(cur_input_ids)
-
-                    if next_images:
-                        pv = processed_input["pixel_values"]
-                        thw = processed_input.get("image_grid_thw", None)
-                        pv_segs.append(pv)
-                        if thw is not None:
-                            thw_segs.append(thw)
-                        all_images.extend(next_images)
-                else:
-                    new_text = self.tokenizer.apply_chat_template(
-                        conversation=new_messages,
-                        tokenize=False,
-                        add_generation_prompt=True,
-                    )
-                   
-                    cur_ids_full = self.tokenizer(new_text, return_tensors="pt")["input_ids"][0].tolist()
-                    cur_input_ids = cur_ids_full[fixed_token_id_len:]
-
-                    input_ids += cur_input_ids
-                    logprobs += [0.0] * len(cur_input_ids)
-                    loss_mask += [0] * len(cur_input_ids)
-                    versions += [-1] * len(cur_input_ids)
-
-                t += 1
-
-            # ===== Pack outputs =====
-            L = len(input_ids)
-            success_flag = _extract_success_flag(last_info)
-            res: Dict[str, Any] = {
-                "input_ids": torch.tensor(input_ids, dtype=torch.long).unsqueeze(0),
-                "attention_mask": torch.ones(1, L, dtype=torch.long),
-                "loss_mask": torch.tensor(loss_mask, dtype=torch.long).unsqueeze(0),
-                "logprobs": torch.tensor(logprobs, dtype=torch.float32).unsqueeze(0),
-                "versions": torch.tensor(versions, dtype=torch.long).unsqueeze(0),
-                "rewards": torch.tensor(float(cumulative_reward)).unsqueeze(0),
-                "success": torch.tensor(success_flag, dtype=torch.float32).unsqueeze(0),
-            }
-            tag_id = int(data.get("tag_id", -1))
-            res["tag_id"] = torch.tensor([tag_id], dtype=torch.long)
-
-            multi_modal_input: Dict[str, torch.Tensor] = {}
-            if pv_segs:
-                multi_modal_input["pixel_values"] = torch.cat(pv_segs, dim=0)
-            if thw_segs:
-                multi_modal_input["image_grid_thw"] = torch.cat(thw_segs, dim=0)
-
-            if multi_modal_input:
-                # Consistency check: #<image_pad> == #features / merge^2
-                image_token_id = self._robust_image_token_id()
-                if image_token_id is not None:
-                    merge_sz = self._merge_size()
-                    num_image_pad_tokens = int((res["input_ids"] == image_token_id).sum().item())
-                    num_pixel_features = int(multi_modal_input["pixel_values"].shape[0] // (merge_sz ** 2))
-                    assert num_image_pad_tokens == num_pixel_features, (
-                        f"Mismatch: #<image_pad>={num_image_pad_tokens} vs "
-                        f"#features/merge^2={num_pixel_features}. "
-                        f"Use processor(..., images=...) for VLM turns and ensure merge_size matches."
-                    )
-                res["multi_modal_input"] = [multi_modal_input]
-
-            total_str = self.tokenizer.decode(input_ids)
-            return res, total_str, cumulative_reward, len(input_ids)
-        except Exception as e:
-            logger.error(f"Error during episode rollout: {e}", exc_info=True)
-            raise
-        finally:
-            try:
-                await env.close()
-            except Exception:
-                pass
+        total_str = self.tokenizer.decode(input_ids)
+        await env.close()
+        return result, total_str, cumulative_reward, len(input_ids)
 
     async def arun_episode(self, engine: InferenceEngine, data: dict):
-        """Run one episode with potentially multiple samples (async)."""
         rid = uuid.uuid4().hex
-        tasks = [self._run_one_episode(engine, data, rid) for _ in range(self.gconfig.n_samples)]
         try:
-            results = await asyncio.gather(*tasks, return_exceptions=False)
-        except Exception as exc:
+            results = await asyncio.gather(
+                *[self._run_one_episode(engine, data, rid) for _ in range(self.gconfig.n_samples)],
+                return_exceptions=False
+            )
+        except Exception:
             logger.error("Episode failed", exc_info=True)
             return None
 
-        # Optional dump to disk
+        # Optional dump
         if self.dump_dir is not None:
-            version = engine.get_version()
-            out_dir = os.path.join(self.dump_dir, str(version))
+            out_dir = os.path.join(self.dump_dir, str(engine.get_version()))
             os.makedirs(out_dir, exist_ok=True)
-            qid = None
-            for key in ["query_id", "id", "qid"]:
-                qid = data.get(key)
-                if qid is not None:
-                    break
-            qid = qid or uuid.uuid4().hex
-            dump_path = os.path.join(out_dir, f"{qid}.txt")
-            with open(dump_path, "a") as f:
-                n_samples = self.gconfig.n_samples
-                for i, (_, total_str, cumulative_reward, len_seq) in enumerate(results):
-                    info = "\n".join(
-                        [
-                            f"idx: {i + 1} / {n_samples}, seqlen: {len_seq}, cumulative reward: {cumulative_reward}.",
-                            "Total string is \n"
-                            + colorama.Fore.YELLOW
-                            + colorama.Style.DIM
-                            + total_str
-                            + colorama.Style.RESET_ALL,
-                        ]
-                    )
+            qid = next((data.get(k) for k in ["query_id", "id", "qid"] if data.get(k) is not None), uuid.uuid4().hex)
+            with open(os.path.join(out_dir, f"{qid}.txt"), "a") as f:
+                for i, (_, total_str, reward, seqlen) in enumerate(results):
+                    info = "\n".join([
+                        f"idx: {i+1} / {self.gconfig.n_samples}, seqlen: {seqlen}, cumulative reward: {reward}.",
+                        "Total string is \n" + colorama.Fore.YELLOW + colorama.Style.DIM + total_str + colorama.Style.RESET_ALL,
+                    ])
                     f.write(info + "\n")
 
-        td_list = [result[0] for result in results]
+        td_list = [r[0] for r in results]
         return concat_padded_tensors(td_list)
