@@ -394,7 +394,7 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                 res["multi_modal_input"] = [multi_modal_input]
 
             total_str = self.tokenizer.decode(input_ids)
-            return TensorDict(res, batch_size=[1]), total_str, cumulative_reward, len(input_ids)
+            return res, total_str, cumulative_reward, len(input_ids)
         #get detailed error if something goes wrong
         except Exception as e:
             logger.error(f"Error during episode rollout: {e}", exc_info=True)
@@ -445,5 +445,5 @@ class VisionMultiTurnAgentEnvWorkflow(RolloutWorkflow):
                     )
                     f.write(info + "\n")
 
-        td_list = [res[0] for res in results]
+        td_list = [result[0] for result in results]
         return concat_padded_tensors(td_list)
